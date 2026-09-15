@@ -1,4 +1,4 @@
-export type Channel = "naver_sa" | "naver_gfa" | "meta";
+export type Channel = "naver_sa" | "naver_gfa" | "meta" | "google_ads";
 export type EntityType = "campaign" | "adgroup" | "ad";
 export type EntityStatus = "on" | "off";
 
