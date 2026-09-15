@@ -36,7 +36,7 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .connection > div { display: flex; align-items: center; gap: 7px; }
 .connection em { margin-left: auto; font-size: 11px; font-style: normal; font-weight: 700; }
 .connection strong { font-size: 20px; }
-.connection small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.connection small { overflow-wrap: anywhere; color: var(--muted); line-height: 1.35; }
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #aaa; }
 .connection.connected .connection-dot { background: #1f9d63; }
 .connection.connected em { color: #16794b; }
