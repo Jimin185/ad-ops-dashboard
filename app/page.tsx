@@ -6,7 +6,7 @@ import type { Campaign, ChangeOperation, PendingAction } from "@/lib/types";
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[] };
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
-const channelLabel = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta" } as const;
+const channelLabel = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" } as const;
 
 function MarkdownLite({ value }: { value: string }) {
   const lines = value.split("\n");
