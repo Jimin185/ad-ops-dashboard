@@ -69,6 +69,7 @@ export default function Dashboard() {
   const [loadError, setLoadError] = useState("");
   const [connections, setConnections] = useState<ConnectionStatus[]>([]);
   const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [accountErrors, setAccountErrors] = useState<Partial<Record<Channel, string>>>({});
   const [advertisers, setAdvertisers] = useState<Advertiser[]>([]);
   const [selectedAdvertiserId, setSelectedAdvertiserId] = useState("");
   const [view, setView] = useState<"select" | "mapping" | "dashboard">("select");
@@ -102,7 +103,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     void refresh();
-    void fetch("/api/accounts", { cache: "no-store" }).then((response) => response.json()).then((data) => setAccounts(data.accounts || []));
+    void fetch("/api/accounts", { cache: "no-store" }).then((response) => response.json()).then((data) => { setAccounts(data.accounts || []); setAccountErrors(data.errors || {}); });
     try { setAdvertisers(JSON.parse(localStorage.getItem("adops-advertisers") || "[]")); } catch { setAdvertisers([]); }
   }, [refresh]);
 
@@ -197,6 +198,7 @@ export default function Dashboard() {
       <section className="mapping-panel">
         <div className="mapping-toolbar"><select value={selectedAdvertiserId} onChange={(event) => setSelectedAdvertiserId(event.target.value)}><option value="">광고주 선택</option>{advertisers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="secondary" onClick={createAdvertiser}>+ 광고주</button></div>
         <div className="account-list">{accounts.map((account) => { const checked = Boolean(selectedAdvertiser?.accountKeys.includes(`${account.channel}:${account.id}`)); return <label key={`${account.channel}:${account.id}`}><input type="checkbox" disabled={!selectedAdvertiser} checked={checked} onChange={() => selectedAdvertiser && toggleAccount(selectedAdvertiser.id, account)} /><span className={`channel ${account.channel}`}>{channelLabel[account.channel]}</span><b>{account.name}</b><small>{account.id}</small></label>; })}</div>
+        {Object.entries(accountErrors).map(([channel, message]) => <div className="connection-error" key={channel}><b>{channelLabel[channel as Channel]} 계정 조회 오류</b><span>{message}</span></div>)}
         {!accounts.length && <div className="empty-state"><b>발견된 광고계정이 없습니다.</b><span>위 연결 상태의 오류와 환경변수를 먼저 확인해 주세요.</span></div>}
         {selectedAdvertiser && <button className="primary" onClick={() => setView("dashboard")}>{selectedAdvertiser.name} 대시보드 열기</button>}
       </section>
