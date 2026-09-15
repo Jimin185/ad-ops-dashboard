@@ -142,7 +142,7 @@ export default function Dashboard() {
         {connections.map((connection) => <article key={connection.channel} className={`connection ${connection.status}`}>
           <div><span className="connection-dot" /><b>{channelLabel[connection.channel]}</b><em>{connection.status === "connected" ? "연결됨" : connection.status === "error" ? "오류" : connection.status === "not_configured" ? "미설정" : "준비 중"}</em></div>
           <strong>{connection.campaignCount}개</strong>
-          <small>{connection.message}</small>
+          <small title={connection.message}>{connection.message}</small>
         </article>)}
       </section>}
 
