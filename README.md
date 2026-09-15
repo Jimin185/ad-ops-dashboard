@@ -45,6 +45,68 @@ Claude 구독료와 API 사용료는 별개입니다. 이 앱은 사용한 입�
 - 키는 배포 서비스의 서버 환경변수에만 저장합니다.
 - 실제 운영 전 사용자 인증, 역할별 권한, 감사 로그 저장소를 추가해야 합니다.
 
+## 광고주 중심 계정 관리
+
+실운영 구조의 최상위 단위는 매체가 아니라 광고주입니다. 관리자 모드에서 각 매체의
+MCC, Business Manager 또는 에이전시 계정으로 접근 가능한 하위 광고계정을 동기화한 뒤
+광고주에 매핑합니다. 광고계정 ID를 환경변수에 하나씩 추가하지 않습니다.
+
+구조 예시:
+
+```text
+광고주 A
+  Meta       Account 1 / Account 2 / Account 3
+  Naver SA   Account 1
+  Google Ads Account 1
+  Naver GFA  Account 1
+```
+
+환경변수에는 매체별 상위 관리자 인증정보만 저장합니다. 광고주, 계정 ID, 계정 별칭,
+채널 및 사용자 접근 권한은 데이터베이스에서 관리하고, 토큰과 Secret은 서버에서만
+접근하도록 암호화합니다.
+
+### 관리자 인증 환경변수
+
+```dotenv
+# Core
+ANTHROPIC_API_KEY=
+PENDING_ACTION_SECRET=
+DATA_ENCRYPTION_KEY=
+ADAPTER_MODE=mock
+
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+
+# Naver SA manager/agency
+NAVER_SA_API_KEY=
+NAVER_SA_SECRET_KEY=
+NAVER_SA_MANAGER_CUSTOMER_ID=
+
+# Naver GFA manager/agency
+NAVER_GFA_API_KEY=
+NAVER_GFA_SECRET_KEY=
+NAVER_GFA_MANAGER_ACCOUNT_ID=
+
+# Google Ads MCC
+GOOGLE_ADS_DEVELOPER_TOKEN=
+GOOGLE_ADS_CLIENT_ID=
+GOOGLE_ADS_CLIENT_SECRET=
+GOOGLE_ADS_REFRESH_TOKEN=
+GOOGLE_ADS_LOGIN_CUSTOMER_ID=
+
+# Meta Business Manager / System User
+META_APP_ID=
+META_APP_SECRET=
+META_SYSTEM_USER_ACCESS_TOKEN=
+META_BUSINESS_ID=
+```
+
+네이버 SA/GFA의 하위 계정 목록 API 지원 여부는 실제 에이전시 권한과 문서를 기준으로
+검증합니다. 목록 자동 조회가 제한되는 채널은 관리자 화면에서 계정 ID 수동 등록 또는
+CSV 가져오기를 함께 제공합니다.
+
 ## 구조
 
 ```text
