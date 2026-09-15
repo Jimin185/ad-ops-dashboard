@@ -9,6 +9,12 @@ export type ConnectionStatus = {
   message: string;
 };
 
+export type AdAccount = {
+  id: string;
+  channel: Channel;
+  name: string;
+};
+
 export type Campaign = {
   id: string;
   channel: Channel;
@@ -18,6 +24,8 @@ export type Campaign = {
   spend: number;
   conversions: number;
   roas: number;
+  accountId?: string;
+  accountName?: string;
 };
 
 export type AdGroup = {
