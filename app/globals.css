@@ -31,3 +31,16 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .connection-error { margin: 0 20px 16px; padding: 14px 16px; display: grid; gap: 4px; border: 1px solid #efb3ad; border-radius: 12px; background: #fff4f2; color: #80251d; }
 .connection-error span { overflow-wrap: anywhere; }
 .connection-error small { color: #9a4a43; }
+.connections { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.connection { padding: 15px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); display: grid; gap: 7px; }
+.connection > div { display: flex; align-items: center; gap: 7px; }
+.connection em { margin-left: auto; font-size: 11px; font-style: normal; font-weight: 700; }
+.connection strong { font-size: 20px; }
+.connection small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #aaa; }
+.connection.connected .connection-dot { background: #1f9d63; }
+.connection.connected em { color: #16794b; }
+.connection.error .connection-dot { background: #d6453a; }
+.connection.error em { color: #b22e25; }
+.connection.not_configured .connection-dot, .connection.unsupported .connection-dot { background: #d89b1d; }
+@media (max-width: 900px) { .connections { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
