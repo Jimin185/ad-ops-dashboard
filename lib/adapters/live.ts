@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { Ad, AdGroup, Campaign, Channel, ChangeOperation, EntityStatus, EntityType, StatsRow } from "@/lib/types";
+import type { Ad, AdGroup, Campaign, Channel, ChangeOperation, ConnectionStatus, EntityStatus, EntityType, StatsRow } from "@/lib/types";
 
 const META_VERSION = process.env.META_API_VERSION || "v25.0";
 const GOOGLE_VERSION = process.env.GOOGLE_ADS_API_VERSION || "v25";
@@ -157,15 +157,38 @@ async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
   return batches.flat();
 }
 
+const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
+
+export async function getLiveSnapshot(includeOff = true): Promise<{ campaigns: Campaign[]; connections: ConnectionStatus[] }> {
+  const definitions: Array<{ channel: Channel; configured: boolean; run?: () => Promise<Campaign[]>; unsupported?: string }> = [
+    { channel: "naver_sa", configured: Boolean(naverCredentials()), run: () => naverCampaigns(includeOff) },
+    { channel: "naver_gfa", configured: Boolean(env("NAVER_GFA_API_KEY") && env("NAVER_GFA_SECRET_KEY") && env("NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID")), unsupported: "연동 규격 확인 후 지원 예정" },
+    { channel: "meta", configured: Boolean(metaToken() && (env("META_BUSINESS_ID") || env("META_AD_ACCOUNT_ID"))), run: () => metaCampaigns(includeOff) },
+    { channel: "google_ads", configured: Boolean(env("GOOGLE_ADS_DEVELOPER_TOKEN") && env("GOOGLE_ADS_CLIENT_ID") && env("GOOGLE_ADS_CLIENT_SECRET") && env("GOOGLE_ADS_REFRESH_TOKEN") && env("GOOGLE_ADS_LOGIN_CUSTOMER_ID")), run: () => googleCampaigns(includeOff) },
+  ];
+  const results = await Promise.all(definitions.map(async (definition) => {
+    if (!definition.configured) return { definition, campaigns: [] as Campaign[], error: null };
+    if (definition.unsupported) return { definition, campaigns: [] as Campaign[], error: null };
+    try { return { definition, campaigns: await definition.run!(), error: null }; }
+    catch (error) { return { definition, campaigns: [] as Campaign[], error: error instanceof Error ? error.message : String(error) }; }
+  }));
+  const campaigns = results.flatMap((result) => result.campaigns);
+  const connections: ConnectionStatus[] = results.map(({ definition, campaigns: rows, error }) => {
+    if (!definition.configured) return { channel: definition.channel, status: "not_configured", campaignCount: 0, message: "환경변수 미설정" };
+    if (definition.unsupported) return { channel: definition.channel, status: "unsupported", campaignCount: 0, message: definition.unsupported };
+    if (error) return { channel: definition.channel, status: "error", campaignCount: 0, message: error };
+    return { channel: definition.channel, status: "connected", campaignCount: rows.length, message: rows.length ? `${rows.length}개 캠페인 조회` : "연결 성공 · 조회된 캠페인 없음" };
+  });
+  return { campaigns, connections };
+}
+
 async function allCampaigns(includeOff = false) {
-  const tasks = [naverCampaigns(includeOff), metaCampaigns(includeOff), googleCampaigns(includeOff)];
-  const results = await Promise.allSettled(tasks);
-  const campaigns = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-  if (!campaigns.length) {
-    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason?.message || String(result.reason)] : []);
-    throw new Error(errors.length ? `실계정 조회 실패: ${errors.join(" / ")}` : "연결된 실계정이 없습니다. 환경변수를 확인해 주세요.");
+  const snapshot = await getLiveSnapshot(includeOff);
+  if (!snapshot.campaigns.length && snapshot.connections.some((item) => item.status === "error")) {
+    const errors = snapshot.connections.filter((item) => item.status === "error").map((item) => `${channelNames[item.channel]}: ${item.message}`);
+    throw new Error(`실계정 조회 실패: ${errors.join(" / ")}`);
   }
-  return campaigns;
+  return snapshot.campaigns;
 }
 
 async function entityFromCampaign(id: string) { return (await allCampaigns(true)).find((row) => row.id === id) || null; }
