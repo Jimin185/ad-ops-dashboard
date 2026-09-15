@@ -2,6 +2,13 @@ export type Channel = "naver_sa" | "naver_gfa" | "meta" | "google_ads";
 export type EntityType = "campaign" | "adgroup" | "ad";
 export type EntityStatus = "on" | "off";
 
+export type ConnectionStatus = {
+  channel: Channel;
+  status: "connected" | "error" | "not_configured" | "unsupported";
+  campaignCount: number;
+  message: string;
+};
+
 export type Campaign = {
   id: string;
   channel: Channel;
