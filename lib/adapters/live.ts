@@ -26,7 +26,8 @@ async function jsonFetch(url: string, init?: RequestInit) {
   let body: any;
   try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
   if (!response.ok) {
-    const message = body?.error?.message || body?.error?.details?.[0]?.errors?.[0]?.message || body?.message || `${response.status} ${response.statusText}`;
+    const detail = body?.error?.details?.flatMap((item: any) => item?.errors || [])?.[0];
+    const message = detail?.message || detail?.errorCode && JSON.stringify(detail.errorCode) || body?.error?.message || body?.message || `${response.status} ${response.statusText}`;
     throw new Error(message);
   }
   return body;
@@ -160,11 +161,12 @@ async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
 export async function getLiveSnapshot(includeOff = true): Promise<{ campaigns: Campaign[]; connections: ConnectionStatus[] }> {
-  const definitions: Array<{ channel: Channel; configured: boolean; run?: () => Promise<Campaign[]>; unsupported?: string }> = [
-    { channel: "naver_sa", configured: Boolean(naverCredentials()), run: () => naverCampaigns(includeOff) },
-    { channel: "naver_gfa", configured: Boolean(env("NAVER_GFA_API_KEY") && env("NAVER_GFA_SECRET_KEY") && env("NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID")), unsupported: "연동 규격 확인 후 지원 예정" },
-    { channel: "meta", configured: Boolean(metaToken() && (env("META_BUSINESS_ID") || env("META_AD_ACCOUNT_ID"))), run: () => metaCampaigns(includeOff) },
-    { channel: "google_ads", configured: Boolean(env("GOOGLE_ADS_DEVELOPER_TOKEN") && env("GOOGLE_ADS_CLIENT_ID") && env("GOOGLE_ADS_CLIENT_SECRET") && env("GOOGLE_ADS_REFRESH_TOKEN") && env("GOOGLE_ADS_LOGIN_CUSTOMER_ID")), run: () => googleCampaigns(includeOff) },
+  const missing = (...names: Array<string | [string, string]>) => names.filter((name) => Array.isArray(name) ? !env(name[0], name[1]) : !env(name)).map((name) => Array.isArray(name) ? `${name[0]} 또는 ${name[1]}` : name);
+  const definitions: Array<{ channel: Channel; configured: boolean; missing: string[]; run?: () => Promise<Campaign[]>; unsupported?: string }> = [
+    { channel: "naver_sa", missing: missing("NAVER_SA_API_KEY", "NAVER_SA_SECRET_KEY", ["NAVER_SA_CUSTOMER_ID", "NAVER_SA_MANAGER_CUSTOMER_ID"]), configured: Boolean(naverCredentials()), run: () => naverCampaigns(includeOff) },
+    { channel: "naver_gfa", missing: missing("NAVER_GFA_API_KEY", "NAVER_GFA_SECRET_KEY", ["NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID"]), configured: Boolean(env("NAVER_GFA_API_KEY") && env("NAVER_GFA_SECRET_KEY") && env("NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID")), unsupported: "연동 규격 확인 후 지원 예정" },
+    { channel: "meta", missing: missing(["META_SYSTEM_USER_ACCESS_TOKEN", "META_ACCESS_TOKEN"], ["META_BUSINESS_ID", "META_AD_ACCOUNT_ID"]), configured: Boolean(metaToken() && (env("META_BUSINESS_ID") || env("META_AD_ACCOUNT_ID"))), run: () => metaCampaigns(includeOff) },
+    { channel: "google_ads", missing: missing("GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET", "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_LOGIN_CUSTOMER_ID"), configured: Boolean(env("GOOGLE_ADS_DEVELOPER_TOKEN") && env("GOOGLE_ADS_CLIENT_ID") && env("GOOGLE_ADS_CLIENT_SECRET") && env("GOOGLE_ADS_REFRESH_TOKEN") && env("GOOGLE_ADS_LOGIN_CUSTOMER_ID")), run: () => googleCampaigns(includeOff) },
   ];
   const results = await Promise.all(definitions.map(async (definition) => {
     if (!definition.configured) return { definition, campaigns: [] as Campaign[], error: null };
@@ -174,7 +176,7 @@ export async function getLiveSnapshot(includeOff = true): Promise<{ campaigns: C
   }));
   const campaigns = results.flatMap((result) => result.campaigns);
   const connections: ConnectionStatus[] = results.map(({ definition, campaigns: rows, error }) => {
-    if (!definition.configured) return { channel: definition.channel, status: "not_configured", campaignCount: 0, message: "환경변수 미설정" };
+    if (!definition.configured) return { channel: definition.channel, status: "not_configured", campaignCount: 0, message: `누락: ${definition.missing.join(", ")}` };
     if (definition.unsupported) return { channel: definition.channel, status: "unsupported", campaignCount: 0, message: definition.unsupported };
     if (error) return { channel: definition.channel, status: "error", campaignCount: 0, message: error };
     return { channel: definition.channel, status: "connected", campaignCount: rows.length, message: rows.length ? `${rows.length}개 캠페인 조회` : "연결 성공 · 조회된 캠페인 없음" };
