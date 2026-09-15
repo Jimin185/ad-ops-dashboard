@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Campaign, ChangeOperation, PendingAction } from "@/lib/types";
+import type { Campaign, ChangeOperation, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[] };
 
@@ -66,6 +66,7 @@ export default function Dashboard() {
   const [mode, setMode] = useState("mock");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [connections, setConnections] = useState<ConnectionStatus[]>([]);
   const [chatOpen, setChatOpen] = useState(true);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -81,6 +82,7 @@ export default function Dashboard() {
     if (data.mode) setMode(data.mode);
     if (response.ok) {
       setCampaigns(data.campaigns);
+      setConnections(data.connections || []);
     } else {
       setCampaigns([]);
       setLoadError(data.error || "실계정 캠페인을 불러오지 못했습니다.");
@@ -135,6 +137,14 @@ export default function Dashboard() {
         <article><span>전환</span><strong>{totals.conversions.toLocaleString()}건</strong><small>이번 달 누적</small></article>
         <article><span>활성 캠페인</span><strong>{totals.active}개</strong><small>전체 {campaigns.length}개</small></article>
       </section>
+
+      {mode === "live" && <section className="connections">
+        {connections.map((connection) => <article key={connection.channel} className={`connection ${connection.status}`}>
+          <div><span className="connection-dot" /><b>{channelLabel[connection.channel]}</b><em>{connection.status === "connected" ? "연결됨" : connection.status === "error" ? "오류" : connection.status === "not_configured" ? "미설정" : "준비 중"}</em></div>
+          <strong>{connection.campaignCount}개</strong>
+          <small>{connection.message}</small>
+        </article>)}
+      </section>}
 
       <section className="panel">
         <div className="panel-head"><div><h2>캠페인</h2><p>예산과 상태를 직접 수정하거나 AI에게 요청할 수 있습니다.</p></div><button className="secondary" onClick={refresh}>새로고침</button></div>
