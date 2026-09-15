@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { Ad, AdGroup, Campaign, Channel, ChangeOperation, ConnectionStatus, EntityStatus, EntityType, StatsRow } from "@/lib/types";
+import type { Ad, AdAccount, AdGroup, Campaign, Channel, ChangeOperation, ConnectionStatus, EntityStatus, EntityType, StatsRow } from "@/lib/types";
 
 const META_VERSION = process.env.META_API_VERSION || "v25.0";
 const GOOGLE_VERSION = process.env.GOOGLE_ADS_API_VERSION || "v25";
@@ -65,6 +65,7 @@ async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
   return (rows as any[]).filter((row) => includeOff || row.status === "ELIGIBLE").map((row) => ({
     id: packed("naver_sa", credentials.customerId, row.nccCampaignId), channel: "naver_sa", name: row.name,
     dailyBudget: num(row.dailyBudget), status: row.userLock ? "off" : "on", spend: 0, conversions: 0, roas: 0,
+    accountId: credentials.customerId, accountName: `네이버 SA ${credentials.customerId}`,
   }));
 }
 
@@ -83,22 +84,23 @@ async function metaPost(path: string, fields: Record<string, string | number>) {
     body: new URLSearchParams({ ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)])), access_token: token }),
   });
 }
-async function metaAccounts() {
+async function metaAccounts(): Promise<AdAccount[]> {
   const single = env("META_AD_ACCOUNT_ID");
   const business = env("META_BUSINESS_ID");
   if (!metaToken()) return [];
-  if (!business) return single ? [single.replace(/^act_/, "")] : [];
+  if (!business) return single ? [{ id: single.replace(/^act_/, ""), channel: "meta", name: `Meta ${single.replace(/^act_/, "")}` }] : [];
   const [owned, client] = await Promise.all([
     metaGet(`${business}/owned_ad_accounts`, { fields: "id,name", limit: "500" }),
     metaGet(`${business}/client_ad_accounts`, { fields: "id,name", limit: "500" }),
   ]);
-  return [...(owned.data || []), ...(client.data || [])].map((row: any) => String(row.id).replace(/^act_/, "")).filter((id, i, all) => all.indexOf(id) === i);
+  const combined = [...(owned.data || []), ...(client.data || [])].map((row: any) => ({ id: String(row.id).replace(/^act_/, ""), channel: "meta" as const, name: row.name || `Meta ${String(row.id).replace(/^act_/, "")}` }));
+  return combined.filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index);
 }
 async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await metaAccounts();
   const { since, until } = monthRange();
-  const batches = await Promise.all(accounts.map(async (account: string) => {
-    const body = await metaGet(`act_${account}/campaigns`, {
+  const batches = await Promise.all(accounts.map(async (account) => {
+    const body = await metaGet(`act_${account.id}/campaigns`, {
       fields: `id,name,status,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
       limit: "500",
     });
@@ -107,8 +109,9 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       const purchase = (insight.actions || []).find((x: any) => ["purchase", "omni_purchase"].includes(x.action_type));
       const revenue = (insight.action_values || []).find((x: any) => ["purchase", "omni_purchase"].includes(x.action_type));
       const spend = num(insight.spend);
-      return { id: packed("meta", account, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / 100,
-        status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0 };
+      return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / 100,
+        status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
+        accountId: account.id, accountName: account.name };
     });
   }));
   return batches.flat();
@@ -134,31 +137,47 @@ async function googleRequest(path: string, body?: unknown) {
   });
 }
 async function googleSearch(customer: string, query: string) {
-  const body = await googleRequest(`customers/${cleanId(customer)}/googleAds:search`, { query, pageSize: 10000 });
+  const body = await googleRequest(`customers/${cleanId(customer)}/googleAds:search`, { query });
   return body.results || [];
 }
-async function googleAccounts() {
+async function googleAccounts(): Promise<AdAccount[]> {
   const manager = cleanId(env("GOOGLE_ADS_LOGIN_CUSTOMER_ID") || "");
   if (!manager || !env("GOOGLE_ADS_DEVELOPER_TOKEN")) return [];
-  const rows = await googleSearch(manager, "SELECT customer_client.id, customer_client.manager, customer_client.status FROM customer_client WHERE customer_client.status = 'ENABLED'");
-  return rows.map((row: any) => String(row.customerClient?.id || "")).filter((id: string) => id && id !== manager);
+  const rows = await googleSearch(manager, "SELECT customer_client.id, customer_client.descriptive_name, customer_client.manager, customer_client.status FROM customer_client WHERE customer_client.status = 'ENABLED'");
+  return rows.map((row: any) => ({ id: String(row.customerClient?.id || ""), channel: "google_ads" as const, name: row.customerClient?.descriptiveName || `Google Ads ${row.customerClient?.id}` })).filter((row: AdAccount) => row.id && row.id !== manager);
 }
 async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await googleAccounts();
-  const batches = await Promise.all(accounts.map(async (account: string) => {
+  const batches = await Promise.all(accounts.map(async (account) => {
     const status = includeOff ? "campaign.status != 'REMOVED'" : "campaign.status = 'ENABLED'";
-    const rows = await googleSearch(account, `SELECT campaign.id, campaign.name, campaign.status, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
+    const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
     return rows.map((row: any) => {
       const spend = num(row.metrics?.costMicros) / 1_000_000;
-      return { id: packed("google_ads", account, String(row.campaign.id)), channel: "google_ads" as const, name: row.campaign.name,
+      return { id: packed("google_ads", account.id, String(row.campaign.id)), channel: "google_ads" as const, name: row.campaign.name,
         dailyBudget: num(row.campaignBudget?.amountMicros) / 1_000_000, status: asStatus(row.campaign.status), spend,
-        conversions: Math.round(num(row.metrics?.conversions)), roas: spend ? Math.round(num(row.metrics?.conversionsValue) / spend * 100) : 0 };
+        conversions: Math.round(num(row.metrics?.conversions)), roas: spend ? Math.round(num(row.metrics?.conversionsValue) / spend * 100) : 0,
+        accountId: account.id, accountName: account.name };
     });
   }));
   return batches.flat();
 }
 
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
+
+export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
+  const accounts: AdAccount[] = [];
+  const errors: Partial<Record<Channel, string>> = {};
+  const naver = naverCredentials();
+  if (naver) accounts.push({ id: naver.customerId, channel: "naver_sa", name: `네이버 SA ${naver.customerId}` });
+  const gfaId = env("NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID");
+  if (gfaId) accounts.push({ id: gfaId, channel: "naver_gfa", name: `네이버 GFA ${gfaId}` });
+  const results = await Promise.allSettled([metaAccounts(), googleAccounts()]);
+  if (results[0].status === "fulfilled") accounts.push(...results[0].value);
+  else errors.meta = results[0].reason instanceof Error ? results[0].reason.message : String(results[0].reason);
+  if (results[1].status === "fulfilled") accounts.push(...results[1].value);
+  else errors.google_ads = results[1].reason instanceof Error ? results[1].reason.message : String(results[1].reason);
+  return { accounts, errors };
+}
 
 export async function getLiveSnapshot(includeOff = true): Promise<{ campaigns: Campaign[]; connections: ConnectionStatus[] }> {
   const missing = (...names: Array<string | [string, string]>) => names.filter((name) => Array.isArray(name) ? !env(name[0], name[1]) : !env(name)).map((name) => Array.isArray(name) ? `${name[0]} 또는 ${name[1]}` : name);
