@@ -65,6 +65,7 @@ export default function Dashboard() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [mode, setMode] = useState("mock");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [chatOpen, setChatOpen] = useState(true);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -74,11 +75,15 @@ export default function Dashboard() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setLoadError("");
     const response = await fetch("/api/campaigns", { cache: "no-store" });
     const data = await response.json();
+    if (data.mode) setMode(data.mode);
     if (response.ok) {
       setCampaigns(data.campaigns);
-      setMode(data.mode);
+    } else {
+      setCampaigns([]);
+      setLoadError(data.error || "실계정 캠페인을 불러오지 못했습니다.");
     }
     setLoading(false);
   }, []);
@@ -133,11 +138,12 @@ export default function Dashboard() {
 
       <section className="panel">
         <div className="panel-head"><div><h2>캠페인</h2><p>예산과 상태를 직접 수정하거나 AI에게 요청할 수 있습니다.</p></div><button className="secondary" onClick={refresh}>새로고침</button></div>
+        {loadError && <div className="connection-error"><b>실계정 연결 오류</b><span>{loadError}</span><small>Vercel 환경변수의 계정 ID, 토큰 및 권한을 확인해 주세요.</small></div>}
         <div className="table-wrap">
           <table className="campaign-table">
             <thead><tr><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : campaigns.map((campaign) => (
+              {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && campaigns.length === 0 ? <tr><td colSpan={6}>조회된 캠페인이 없습니다.</td></tr> : campaigns.map((campaign) => (
                 <tr key={campaign.id}>
                   <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
                   <td><b>{campaign.name}</b><small className="id">{campaign.id}</small></td>
