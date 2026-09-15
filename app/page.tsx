@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Campaign, ChangeOperation, ConnectionStatus, PendingAction } from "@/lib/types";
+import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[] };
+type Advertiser = { id: string; name: string; accountKeys: string[] };
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
 const channelLabel = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" } as const;
@@ -67,6 +68,15 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [connections, setConnections] = useState<ConnectionStatus[]>([]);
+  const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [advertisers, setAdvertisers] = useState<Advertiser[]>([]);
+  const [selectedAdvertiserId, setSelectedAdvertiserId] = useState("");
+  const [view, setView] = useState<"select" | "mapping" | "dashboard">("select");
+  const [selectedChannel, setSelectedChannel] = useState<Channel | "all">("all");
+  const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
+  const [adgroups, setAdgroups] = useState<AdGroup[]>([]);
+  const [adsByGroup, setAdsByGroup] = useState<Record<string, Ad[]>>({});
+  const [detailError, setDetailError] = useState("");
   const [chatOpen, setChatOpen] = useState(true);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -90,13 +100,58 @@ export default function Dashboard() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    void fetch("/api/accounts", { cache: "no-store" }).then((response) => response.json()).then((data) => setAccounts(data.accounts || []));
+    try { setAdvertisers(JSON.parse(localStorage.getItem("adops-advertisers") || "[]")); } catch { setAdvertisers([]); }
+  }, [refresh]);
+
+  useEffect(() => { localStorage.setItem("adops-advertisers", JSON.stringify(advertisers)); }, [advertisers]);
+
+  const selectedAdvertiser = advertisers.find((item) => item.id === selectedAdvertiserId);
+  const scopedCampaigns = campaigns.filter((campaign) => {
+    if (!selectedAdvertiser) return false;
+    const mapped = selectedAdvertiser.accountKeys.includes(`${campaign.channel}:${campaign.accountId}`);
+    return mapped && (selectedChannel === "all" || campaign.channel === selectedChannel);
+  });
 
   const totals = useMemo(() => ({
-    spend: campaigns.reduce((sum, row) => sum + row.spend, 0),
-    conversions: campaigns.reduce((sum, row) => sum + row.conversions, 0),
-    active: campaigns.filter((row) => row.status === "on").length,
-  }), [campaigns]);
+    spend: scopedCampaigns.reduce((sum, row) => sum + row.spend, 0),
+    conversions: scopedCampaigns.reduce((sum, row) => sum + row.conversions, 0),
+    active: scopedCampaigns.filter((row) => row.status === "on").length,
+  }), [scopedCampaigns]);
+
+  function createAdvertiser() {
+    const name = window.prompt("광고주 이름을 입력하세요.")?.trim();
+    if (!name) return;
+    const advertiser = { id: crypto.randomUUID(), name, accountKeys: [] };
+    setAdvertisers((current) => [...current, advertiser]);
+    setSelectedAdvertiserId(advertiser.id);
+    setView("mapping");
+  }
+
+  function toggleAccount(advertiserId: string, account: AdAccount) {
+    const key = `${account.channel}:${account.id}`;
+    setAdvertisers((current) => current.map((advertiser) => advertiser.id !== advertiserId ? advertiser : {
+      ...advertiser,
+      accountKeys: advertiser.accountKeys.includes(key) ? advertiser.accountKeys.filter((item) => item !== key) : [...advertiser.accountKeys, key],
+    }));
+  }
+
+  async function openCampaign(campaign: Campaign) {
+    setSelectedCampaign(campaign); setAdgroups([]); setAdsByGroup({}); setDetailError("");
+    const response = await fetch(`/api/entities?channel=${campaign.channel}&campaignId=${encodeURIComponent(campaign.id)}`);
+    const data = await response.json();
+    if (!response.ok) setDetailError(data.error || "광고그룹을 불러오지 못했습니다.");
+    else setAdgroups(data.adgroups || []);
+  }
+
+  async function loadAds(group: AdGroup) {
+    const response = await fetch(`/api/entities?channel=${group.channel}&adgroupId=${encodeURIComponent(group.id)}`);
+    const data = await response.json();
+    if (!response.ok) setDetailError(data.error || "소재를 불러오지 못했습니다.");
+    else setAdsByGroup((current) => ({ ...current, [group.id]: data.ads || [] }));
+  }
 
   async function planManual(operation: ChangeOperation) {
     const response = await fetch("/api/manual/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(operation) });
@@ -125,11 +180,34 @@ export default function Dashboard() {
     }
   }
 
+  if (view === "select") return (
+    <main>
+      <header><div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>광고주 선택</h1><p>운영할 광고주를 선택하면 연결된 매체 계정을 한 번에 불러옵니다.</p></div><button className="secondary" onClick={() => setView("mapping")}>광고계정 매핑</button></header>
+      <section className="advertiser-picker">
+        <div className="advertiser-grid">{advertisers.map((advertiser) => <button key={advertiser.id} onClick={() => { setSelectedAdvertiserId(advertiser.id); setView("dashboard"); }}><b>{advertiser.name}</b><span>{advertiser.accountKeys.length}개 광고계정</span></button>)}</div>
+        {!advertisers.length && <div className="empty-state"><b>등록된 광고주가 없습니다.</b><span>먼저 광고주를 만들고 광고계정을 매핑해 주세요.</span></div>}
+        <button className="primary" onClick={createAdvertiser}>+ 광고주 만들기</button>
+      </section>
+    </main>
+  );
+
+  if (view === "mapping") return (
+    <main>
+      <header><div><span className="eyebrow">ADMIN · ACCOUNT MAPPING</span><h1>광고계정 매핑</h1><p>관리자 계정에서 발견된 계정을 광고주별로 연결합니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
+      <section className="mapping-panel">
+        <div className="mapping-toolbar"><select value={selectedAdvertiserId} onChange={(event) => setSelectedAdvertiserId(event.target.value)}><option value="">광고주 선택</option>{advertisers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="secondary" onClick={createAdvertiser}>+ 광고주</button></div>
+        <div className="account-list">{accounts.map((account) => { const checked = Boolean(selectedAdvertiser?.accountKeys.includes(`${account.channel}:${account.id}`)); return <label key={`${account.channel}:${account.id}`}><input type="checkbox" disabled={!selectedAdvertiser} checked={checked} onChange={() => selectedAdvertiser && toggleAccount(selectedAdvertiser.id, account)} /><span className={`channel ${account.channel}`}>{channelLabel[account.channel]}</span><b>{account.name}</b><small>{account.id}</small></label>; })}</div>
+        {!accounts.length && <div className="empty-state"><b>발견된 광고계정이 없습니다.</b><span>위 연결 상태의 오류와 환경변수를 먼저 확인해 주세요.</span></div>}
+        {selectedAdvertiser && <button className="primary" onClick={() => setView("dashboard")}>{selectedAdvertiser.name} 대시보드 열기</button>}
+      </section>
+    </main>
+  );
+
   return (
     <main>
       <header>
-        <div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>광고 운영 대시보드</h1><p>수동 조작과 자연어 운영을 한 화면에서 관리합니다.</p></div>
-        <div className={`mode ${mode === "mock" ? "demo" : "live"}`}><span />{mode === "mock" ? "DEMO DATA" : "LIVE API"}</div>
+        <div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>{selectedAdvertiser?.name || "광고 운영"} 대시보드</h1><p>수동 조작과 자연어 운영을 한 화면에서 관리합니다.</p></div>
+        <div className="header-actions"><button className="secondary" onClick={() => setView("select")}>광고주 변경</button><button className="secondary" onClick={() => setView("mapping")}>계정 매핑</button><div className={`mode ${mode === "mock" ? "demo" : "live"}`}><span />{mode === "mock" ? "DEMO DATA" : "LIVE API"}</div></div>
       </header>
 
       <section className="metrics">
@@ -146,6 +224,8 @@ export default function Dashboard() {
         </article>)}
       </section>}
 
+      <nav className="channel-tabs"><button className={selectedChannel === "all" ? "active" : ""} onClick={() => setSelectedChannel("all")}>전체</button>{(Object.keys(channelLabel) as Channel[]).map((channel) => <button key={channel} className={selectedChannel === channel ? "active" : ""} onClick={() => setSelectedChannel(channel)}>{channelLabel[channel]}</button>)}</nav>
+
       <section className="panel">
         <div className="panel-head"><div><h2>캠페인</h2><p>예산과 상태를 직접 수정하거나 AI에게 요청할 수 있습니다.</p></div><button className="secondary" onClick={refresh}>새로고침</button></div>
         {loadError && <div className="connection-error"><b>실계정 연결 오류</b><span>{loadError}</span><small>Vercel 환경변수의 계정 ID, 토큰 및 권한을 확인해 주세요.</small></div>}
@@ -153,10 +233,10 @@ export default function Dashboard() {
           <table className="campaign-table">
             <thead><tr><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && campaigns.length === 0 ? <tr><td colSpan={6}>조회된 캠페인이 없습니다.</td></tr> : campaigns.map((campaign) => (
-                <tr key={campaign.id}>
+              {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && scopedCampaigns.length === 0 ? <tr><td colSpan={6}>이 광고주에 매핑된 캠페인이 없습니다.</td></tr> : scopedCampaigns.map((campaign) => (
+                <tr key={campaign.id} onClick={() => void openCampaign(campaign)}>
                   <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
-                  <td><b>{campaign.name}</b><small className="id">{campaign.id}</small></td>
+                  <td><b>{campaign.name}</b><small className="id">{campaign.accountName} · {campaign.id}</small></td>
                   <td><button className="value-button" onClick={() => {
                     const value = window.prompt("변경할 일예산을 입력하세요.", String(campaign.dailyBudget));
                     if (value && Number(value) > 0) void planManual({ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: Number(value) });
@@ -169,6 +249,8 @@ export default function Dashboard() {
           </table>
         </div>
       </section>
+
+      {selectedCampaign && <section className="panel detail-panel"><div className="panel-head"><div><h2>{selectedCampaign.name}</h2><p>광고그룹/광고세트를 선택하면 소재를 조회합니다.</p></div><button className="secondary" onClick={() => setSelectedCampaign(null)}>닫기</button></div>{detailError && <div className="connection-error">{detailError}</div>}<div className="entity-list">{adgroups.map((group) => <div className="entity-group" key={group.id}><button onClick={() => void loadAds(group)}><b>{group.name}</b><span>{won.format(group.dailyBudget)} · {group.status.toUpperCase()}</span></button>{adsByGroup[group.id]?.map((ad) => <div className="ad-row" key={ad.id}><span>소재</span><b>{ad.name}</b><em>{ad.status.toUpperCase()}</em></div>)}</div>)}</div></section>}
 
       <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="AI 어시스턴트 열기">✦</button>
       {chatOpen && <aside className="chat-panel">
