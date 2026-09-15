@@ -10,7 +10,7 @@ export const assistantTools = [
     input_schema: {
       type: "object",
       properties: {
-        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta"] },
+        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
         includeOff: { type: "boolean" },
       },
       additionalProperties: false,
@@ -23,7 +23,7 @@ export const assistantTools = [
     input_schema: {
       type: "object",
       properties: {
-        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta"] },
+        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
         campaignId: { type: "string" },
       },
       required: ["channel", "campaignId"],
@@ -37,7 +37,7 @@ export const assistantTools = [
     input_schema: {
       type: "object",
       properties: {
-        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta"] },
+        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
         adgroupId: { type: "string" },
       },
       required: ["channel", "adgroupId"],
@@ -51,7 +51,7 @@ export const assistantTools = [
     input_schema: {
       type: "object",
       properties: {
-        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta"] },
+        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
         level: { type: "string", enum: ["campaign", "adgroup", "ad"] },
         ids: { type: "array", items: { type: "string" } },
         since: { type: "string", description: "YYYY-MM-DD" },
@@ -68,7 +68,7 @@ export const assistantTools = [
     input_schema: {
       type: "object",
       properties: {
-        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta"] },
+        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
         entityType: { type: "string", enum: ["campaign", "adgroup"] },
         id: { type: "string" },
         dailyBudget: { type: "integer", minimum: 1 },
@@ -84,7 +84,7 @@ export const assistantTools = [
     input_schema: {
       type: "object",
       properties: {
-        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta"] },
+        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
         entityType: { type: "string", enum: ["campaign", "adgroup", "ad"] },
         id: { type: "string" },
         status: { type: "string", enum: ["on", "off"] },
