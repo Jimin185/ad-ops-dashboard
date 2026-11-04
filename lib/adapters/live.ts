@@ -519,6 +519,27 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
   return { since, until, rows, errors };
 }
 
+// TEMP: 네이버 SA stats 파라미터 조합 확인용
+export async function debugNaverStats(customerId: string, since: string, until: string) {
+  const campaigns = await naverRequest("GET", "/ncc/campaigns", undefined, customerId);
+  const ids = (campaigns as any[]).map((row) => row.nccCampaignId).slice(0, 3);
+  const fields = JSON.stringify(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"]);
+  const timeRange = JSON.stringify({ since, until });
+  const variants: Record<string, Record<string, string>> = {
+    idsTotal: { ids: ids.join(","), fields, timeRange },
+    idSingleDaily: { id: ids[0], fields, timeRange, timeIncrement: "1" },
+    idsDaily: { ids: ids.join(","), fields, timeRange, timeIncrement: "1" },
+    idSingleBreakdown: { id: ids[0], fields, timeRange, breakdown: "dayw" },
+    idsDatePreset: { ids: ids.join(","), fields, datePreset: "last7days", timeIncrement: "1" },
+  };
+  const out: Record<string, unknown> = {};
+  for (const [name, params] of Object.entries(variants)) {
+    try { const body = await naverRequest("GET", `/stats?${new URLSearchParams(params)}`, undefined, customerId); out[name] = { ok: true, sample: JSON.stringify(body).slice(0, 400) }; }
+    catch (error) { out[name] = { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+  }
+  return out;
+}
+
 // TEMP: GFA 소재 API 응답 구조 확인용
 export async function debugGfaCreatives(accountId: string) {
   const range = gfaPastRange();
