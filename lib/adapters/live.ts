@@ -114,7 +114,11 @@ async function metaAccounts(): Promise<AdAccount[]> {
   if (!metaToken()) return [];
   // META_AD_ACCOUNT_ID에 쉼표로 여러 계정을 지정하면 비즈니스 조회 없이 그 계정들만 사용한다.
   const listed = (env("META_AD_ACCOUNT_ID") || "").split(",").map((v) => v.trim().replace(/^act_/, "")).filter(Boolean);
-  if (listed.length) return listed.map((id) => ({ id, channel: "meta" as const, name: `Meta ${id}` }));
+  if (listed.length) return Promise.all(listed.map(async (id) => {
+    // 매핑 화면에서 알아볼 수 있도록 실제 광고계정 이름을 가져온다. 실패하면 ID로 표시.
+    const info = await metaGet(`act_${id}`, { fields: "name" }).catch(() => null);
+    return { id, channel: "meta" as const, name: info?.name || `Meta ${id}` };
+  }));
   if (!business) return [];
   const [owned, client] = await Promise.all([
     metaGet(`${business}/owned_ad_accounts`, { fields: "id,name", limit: "500" }),

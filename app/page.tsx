@@ -116,6 +116,9 @@ export default function Dashboard() {
     return mapped && (selectedChannel === "all" || campaign.channel === selectedChannel);
   });
 
+  // 매핑되지 않아 표에서 빠진 캠페인 수 (빈 화면일 때 원인 안내용)
+  const unmappedCount = campaigns.filter((campaign) => selectedChannel === "all" || campaign.channel === selectedChannel).length - scopedCampaigns.length;
+
   const totals = useMemo(() => ({
     spend: scopedCampaigns.reduce((sum, row) => sum + row.spend, 0),
     conversions: scopedCampaigns.reduce((sum, row) => sum + row.conversions, 0),
@@ -235,7 +238,9 @@ export default function Dashboard() {
           <table className="campaign-table">
             <thead><tr><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && scopedCampaigns.length === 0 ? <tr><td colSpan={6}>이 광고주에 매핑된 캠페인이 없습니다.</td></tr> : scopedCampaigns.map((campaign) => (
+              {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && scopedCampaigns.length === 0 ? <tr><td colSpan={6}>{unmappedCount > 0
+                ? <>{selectedChannel === "all" ? "" : `${channelLabel[selectedChannel]} `}캠페인 {unmappedCount.toLocaleString()}개가 있지만 이 광고주에 매핑된 계정이 없습니다. <button className="secondary" onClick={() => setView("mapping")}>계정 매핑하기</button></>
+                : "이 광고주에 매핑된 캠페인이 없습니다."}</td></tr> : scopedCampaigns.map((campaign) => (
                 <tr key={campaign.id} onClick={() => void openCampaign(campaign)}>
                   <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
                   <td><b>{campaign.name}</b><small className="id">{campaign.accountName} · {campaign.id}</small></td>
