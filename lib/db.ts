@@ -11,7 +11,7 @@ let client: postgres.Sql | null = null;
 let migrated: Promise<void> | null = null;
 
 function sql() {
-  if (!client) client = postgres(url(), { ssl: "require", max: 3, idle_timeout: 20, prepare: false });
+  if (!client) client = postgres(url(), { ssl: "require", max: 3, idle_timeout: 20, prepare: false, onnotice: () => {} });
   return client;
 }
 

@@ -10,7 +10,7 @@ export const maxDuration = 60;
 export async function GET(request: Request) {
   return withNaverSaAccounts(request, async () => {
     try {
-      return Response.json(await ensureMonthly(await allAdvertiserAccountKeys(), 50_000));
+      return Response.json(await ensureMonthly(await allAdvertiserAccountKeys(), 25_000));
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
     }

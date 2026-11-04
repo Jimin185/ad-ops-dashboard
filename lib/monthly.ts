@@ -33,16 +33,22 @@ export async function ensureMonthly(accountKeys: string[], budgetMs = 45_000) {
     if (!missing.length) { done++; continue; }
     if (Date.now() - started > budgetMs) { pending++; continue; }
     try {
-      // GFA·SA는 달마다 호출하므로 한 번에 최대 4개월씩
-      const batch = channel === "google_ads" || channel === "meta" ? missing : missing.slice(0, 4);
+      // Vercel 함수 60초 제한 안에 끝나도록 한 번에 몇 달씩만 (GFA·SA는 달마다 호출이라 더 작게)
+      const batch = channel === "google_ads" || channel === "meta" ? missing.slice(0, 6) : missing.slice(0, 2);
       const data = await fetchMonthly(channel as Channel, accountId, batch);
       await sql.begin(async (tx) => {
         await tx`delete from adops_monthly where channel = ${channel} and account_id = ${accountId} and month = any(${batch})`;
+        // 같은 키가 중복되면 합친 뒤 여러 행을 한 번에 넣는다
+        const merged = new Map<string, any>();
         for (const r of data) {
-          await tx`insert into adops_monthly ${tx({ channel: r.channel, account_id: r.accountId, month: r.month, campaign_id: r.campaignId, campaign_name: r.campaignName.slice(0, 200), product: r.product, imp: Math.round(r.imp), clk: Math.round(r.clk), cost: r.cost, conv: r.conv, revenue: r.revenue })}
-            on conflict (channel, account_id, month, campaign_id) do update set imp = excluded.imp, clk = excluded.clk, cost = excluded.cost, conv = excluded.conv, revenue = excluded.revenue, campaign_name = excluded.campaign_name, product = excluded.product, updated_at = now()`;
+          const k = `${r.month}|${r.campaignId}`;
+          const prev = merged.get(k);
+          if (prev) { prev.imp += Math.round(r.imp); prev.clk += Math.round(r.clk); prev.cost += r.cost; prev.conv += r.conv; prev.revenue += r.revenue; }
+          else merged.set(k, { channel: r.channel, account_id: r.accountId, month: r.month, campaign_id: r.campaignId, campaign_name: r.campaignName.slice(0, 200), product: r.product, imp: Math.round(r.imp), clk: Math.round(r.clk), cost: r.cost, conv: r.conv, revenue: r.revenue });
         }
-        for (const m of batch) await tx`insert into adops_monthly_done (channel, account_id, month, fetched_at) values (${channel}, ${accountId}, ${m}, now()) on conflict (channel, account_id, month) do update set fetched_at = now()`;
+        const list = [...merged.values()];
+        for (let i = 0; i < list.length; i += 500) await tx`insert into adops_monthly ${tx(list.slice(i, i + 500))}`;
+        await tx`insert into adops_monthly_done ${tx(batch.map((m) => ({ channel, account_id: accountId, month: m })))} on conflict (channel, account_id, month) do update set fetched_at = now()`;
       });
       if (batch.length < missing.length) pending++; else done++;
     } catch (error) {
