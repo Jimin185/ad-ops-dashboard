@@ -408,18 +408,23 @@ async function gfaDaily(accountId: string, since: string, until: string): Promis
   return [...days.values()];
 }
 
-// 네이버 SA 통계: 캠페인 ID 묶음으로 일자별(timeIncrement=1) 조회
+// 네이버 SA 통계: 여러 ID 합계는 ids로 한 번에, 일자별(timeIncrement)은 단일 id만 지원된다.
 async function naverStats(customerId: string, ids: string[], since: string, until: string, daily: boolean) {
+  const fields = JSON.stringify(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"]);
+  const timeRange = JSON.stringify({ since, until });
+  if (!daily) {
+    const out: any[] = [];
+    for (let i = 0; i < ids.length; i += 50) {
+      const body = await naverRequest("GET", `/stats?${new URLSearchParams({ ids: ids.slice(i, i + 50).join(","), fields, timeRange })}`, undefined, customerId);
+      out.push(...(body?.data || []));
+    }
+    return out;
+  }
   const out: any[] = [];
-  for (let i = 0; i < ids.length; i += 50) {
-    const params = new URLSearchParams({
-      ids: ids.slice(i, i + 50).join(","),
-      fields: JSON.stringify(["impCnt", "clkCnt", "salesAmt", "ccnt", "convAmt"]),
-      timeRange: JSON.stringify({ since, until }),
-      ...(daily ? { timeIncrement: "1" } : {}),
-    });
-    const body = await naverRequest("GET", `/stats?${params}`, undefined, customerId);
-    out.push(...(body?.data || []));
+  for (let i = 0; i < ids.length; i += 5) {
+    const batch = await Promise.all(ids.slice(i, i + 5).map((id) =>
+      naverRequest("GET", `/stats?${new URLSearchParams({ id, fields, timeRange, timeIncrement: "1" })}`, undefined, customerId).then((body) => body?.data || [])));
+    out.push(...batch.flat());
   }
   return out;
 }
@@ -427,10 +432,13 @@ async function naverDaily(accountId: string, since: string, until: string): Prom
   const campaigns = await naverRequest("GET", "/ncc/campaigns", undefined, accountId);
   const ids = (campaigns as any[]).map((row) => row.nccCampaignId).filter(Boolean);
   if (!ids.length) return [];
-  const rows = await naverStats(accountId, ids, since, until, true);
+  // 기간 내 광고비가 있었던 캠페인만 일자별로 조회 (요청 수 절약)
+  const totals = await naverStats(accountId, ids, since, until, false);
+  const active = totals.filter((row) => num(row.salesAmt) > 0 || num(row.impCnt) > 0).map((row) => row.id).slice(0, 60);
+  const rows = await naverStats(accountId, active, since, until, true);
   const days = new Map<string, DailyRow>();
   for (const row of rows) {
-    const date = String(row.dateStart || row.statDt || row.date || since).slice(0, 10);
+    const date = String(row.dateStart || since).slice(0, 10);
     if (!days.has(date)) days.set(date, blankDay(date, "naver_sa", accountId));
     const d = days.get(date)!;
     d.spend += num(row.salesAmt); d.revenue += num(row.convAmt); d.conversions += num(row.ccnt); d.impressions += num(row.impCnt); d.clicks += num(row.clkCnt);
