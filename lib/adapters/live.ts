@@ -811,6 +811,31 @@ export async function executeMediaPlan(steps: MediaStep[], allowedKeys: string[]
   return { success: true, completed: steps.length, results };
 }
 
+// TEMP: 신규 API 형식 확인용
+export async function debugNewApis() {
+  const out: Record<string, unknown> = {};
+  const id = env("NAVER_OPENAPI_KEY_ID") || "", key = env("NAVER_OPENAPI_KEY") || "";
+  const tryFetch = async (name: string, url: string, init: RequestInit) => {
+    try { const r = await fetch(url, { ...init, cache: "no-store" }); out[name] = { status: r.status, body: (await r.text()).slice(0, 400) }; }
+    catch (e) { out[name] = { error: String(e) }; }
+  };
+  const trendBody = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", keywordGroups: [{ groupName: "책상", keywords: ["책상"] }] });
+  await tryFetch("ncp_search_news", "https://naveropenapi.apigw.ntruss.com/search/v1/news?query=" + encodeURIComponent("데스커"), { headers: { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key } });
+  await tryFetch("ncp_datalab", "https://naveropenapi.apigw.ntruss.com/datalab/v1/search", { method: "POST", headers: { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key, "Content-Type": "application/json" }, body: trendBody });
+  await tryFetch("dev_news_idkey", "https://openapi.naver.com/v1/search/news.json?query=" + encodeURIComponent("데스커"), { headers: { "X-Naver-Client-Id": id, "X-Naver-Client-Secret": key } });
+  await tryFetch("dev_news_keyid", "https://openapi.naver.com/v1/search/news.json?query=" + encodeURIComponent("데스커"), { headers: { "X-Naver-Client-Id": key, "X-Naver-Client-Secret": id } });
+  await tryFetch("dev_datalab_idkey", "https://openapi.naver.com/v1/datalab/search", { method: "POST", headers: { "X-Naver-Client-Id": id, "X-Naver-Client-Secret": key, "Content-Type": "application/json" }, body: trendBody });
+  await tryFetch("ncp_search_news_v2", "https://naveropenapi.apigw.ntruss.com/v1/search/news.json?query=" + encodeURIComponent("데스커"), { headers: { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key } });
+  try { out.sa_bizmoney = await naverRequest("GET", "/billing/bizmoney", undefined, "1922718"); } catch (e) { out.sa_bizmoney = String(e); }
+  try { const k = await naverRequest("GET", "/keywordstool?hintKeywords=" + encodeURIComponent("책상") + "&showDetail=1", undefined, "1922718"); out.sa_keywordstool = JSON.stringify(k).slice(0, 500); } catch (e) { out.sa_keywordstool = String(e); }
+  for (const p of ["/adAccounts/44324", "/adAccounts/44324/bizmoney", "/adAccounts/44324/balance", "/adAccounts/44324/budget", "/bizmoney"]) {
+    try { out[`gfa${p}`] = JSON.stringify(await gfaGet(p)).slice(0, 500); } catch (e) { out[`gfa${p}`] = String(e).slice(0, 200); }
+  }
+  try { const r = await gfaGet("/adAccounts", { page: "0", size: "1" }); out.gfa_account_item = JSON.stringify(gfaList(r)[0]).slice(0, 600); } catch (e) { out.gfa_account_item = String(e); }
+  try { const r = await gfaGet("/adAccounts/44324/performance/past/campaigns", { startDate: "2026-09-01", endDate: "2026-10-31", timeUnit: "monthly", limit: "3" }); out.gfa_monthly = JSON.stringify(r).slice(0, 600); } catch (e) { out.gfa_monthly = String(e); }
+  return out;
+}
+
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
 export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
