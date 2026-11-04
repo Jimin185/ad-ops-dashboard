@@ -109,23 +109,38 @@ async function metaPost(path: string, fields: Record<string, string | number>) {
     body: new URLSearchParams({ ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)])), access_token: token }),
   });
 }
+async function metaPaged(path: string, params: Record<string, string>) {
+  const rows: any[] = [];
+  let body = await metaGet(path, { ...params, limit: "200" });
+  rows.push(...(body.data || []));
+  for (let page = 0; body.paging?.next && page < 20; page++) {
+    body = await jsonFetch(body.paging.next);
+    rows.push(...(body.data || []));
+  }
+  return rows;
+}
+// 비활성(2)·종료(101) 계정은 목록에서 제외한다.
+const META_HIDDEN_STATUS = new Set([2, 101]);
 async function metaAccounts(): Promise<AdAccount[]> {
-  const business = env("META_BUSINESS_ID");
   if (!metaToken()) return [];
-  // META_AD_ACCOUNT_ID에 쉼표로 여러 계정을 지정하면 비즈니스 조회 없이 그 계정들만 사용한다.
-  const listed = (env("META_AD_ACCOUNT_ID") || "").split(",").map((v) => v.trim().replace(/^act_/, "")).filter(Boolean);
-  if (listed.length) return Promise.all(listed.map(async (id) => {
-    // 매핑 화면에서 알아볼 수 있도록 실제 광고계정 이름을 가져온다. 실패하면 ID로 표시.
-    const info = await metaGet(`act_${id}`, { fields: "name" }).catch(() => null);
-    return { id, channel: "meta" as const, name: info?.name || `Meta ${id}` };
-  }));
-  if (!business) return [];
-  const [owned, client] = await Promise.all([
-    metaGet(`${business}/owned_ad_accounts`, { fields: "id,name", limit: "500" }),
-    metaGet(`${business}/client_ad_accounts`, { fields: "id,name", limit: "500" }),
+  const business = env("META_BUSINESS_ID");
+  const fields = { fields: "account_id,name,account_status" };
+  // 비즈니스 포트폴리오(소유 + 클라이언트 광고계정)와 토큰이 접근 가능한 광고계정을 모두 모은다. (Google MCC 하위 계정 목록과 같은 역할)
+  const sources = await Promise.allSettled([
+    business ? metaPaged(`${business}/owned_ad_accounts`, fields) : Promise.resolve([]),
+    business ? metaPaged(`${business}/client_ad_accounts`, fields) : Promise.resolve([]),
+    metaPaged("me/adaccounts", fields),
   ]);
-  const combined = [...(owned.data || []), ...(client.data || [])].map((row: any) => ({ id: String(row.id).replace(/^act_/, ""), channel: "meta" as const, name: row.name || `Meta ${String(row.id).replace(/^act_/, "")}` }));
-  return combined.filter((row, index, all) => all.findIndex((item) => item.id === row.id) === index);
+  const rows = sources.flatMap((r) => r.status === "fulfilled" ? r.value : []);
+  if (!rows.length) {
+    const failed = sources.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed) throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason));
+  }
+  const seen = new Set<string>();
+  return rows.filter((row) => !META_HIDDEN_STATUS.has(Number(row.account_status))).map((row) => {
+    const id = String(row.account_id || row.id).replace(/^act_/, "");
+    return { id, channel: "meta" as const, name: row.name || `Meta ${id}` };
+  }).filter((row) => !seen.has(row.id) && seen.add(row.id));
 }
 async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await metaAccounts();
@@ -192,15 +207,134 @@ async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
   });
 }
 
+// ---- 네이버 GFA (openapi.naver.com 광고 API, 네이버 로그인 OAuth) ----
+const GFA_BASE = "https://openapi.naver.com/v1/ad-api/1.0";
+function gfaConfig() {
+  const clientId = env("NAVER_GFA_CLIENT_ID"), clientSecret = env("NAVER_GFA_CLIENT_SECRET"), refreshToken = env("NAVER_GFA_REFRESH_TOKEN");
+  const manager = env("NAVER_GFA_MANAGER_ACCOUNT_NO", "NAVER_GFA_MANAGER_ACCOUNT_ID");
+  return clientId && refreshToken && manager ? { clientId, clientSecret, refreshToken, manager: cleanId(manager) } : null;
+}
+let gfaTokenCache: { token: string; expiresAt: number } | null = null;
+async function gfaToken(force = false) {
+  if (!force && gfaTokenCache && gfaTokenCache.expiresAt > Date.now() + 60_000) return gfaTokenCache.token;
+  const config = gfaConfig();
+  if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
+  const params: Record<string, string> = { grant_type: "refresh_token", client_id: config.clientId, refresh_token: config.refreshToken };
+  if (config.clientSecret) params.client_secret = config.clientSecret;
+  const body = await jsonFetch("https://nid.naver.com/oauth2.0/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(params) });
+  if (!body.access_token) throw new Error(`네이버 GFA 토큰 갱신 실패: ${body.error_description || body.error || "알 수 없음"}`);
+  gfaTokenCache = { token: body.access_token, expiresAt: Date.now() + num(body.expires_in || 3600) * 1000 };
+  return body.access_token as string;
+}
+async function gfaGet(path: string, params: Record<string, string> = {}) {
+  const config = gfaConfig();
+  if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
+  const url = `${GFA_BASE}${path}${Object.keys(params).length ? `?${new URLSearchParams(params)}` : ""}`;
+  const call = async (token: string) => fetch(url, { headers: { Authorization: `Bearer ${token}`, AccessManagerAccountNo: config.manager }, cache: "no-store" });
+  let response = await call(await gfaToken());
+  if (response.status === 401) response = await call(await gfaToken(true));
+  const text = await response.text();
+  let body: any; try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
+  if (!response.ok) {
+    const detail = [body?.message, body?.title, body?.detail, body?.error].find((v) => typeof v === "string") || JSON.stringify(body).slice(0, 300);
+    throw new Error(`${detail} (HTTP ${response.status})`);
+  }
+  return body;
+}
+// 과거 성과(past) API는 어제까지만 조회되고, 어제 데이터는 KST 새벽 2시 이후에 열린다.
+// 그래서 이번 달 1일 ~ 어제(새벽 3시 전이면 그제) 범위를 쓴다. 범위가 비면 조회하지 않는다.
+function gfaPastRange() {
+  const { since, until } = monthRange();
+  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", hour: "numeric", hourCycle: "h23" }).format(new Date()));
+  const y = new Date(`${until}T00:00:00Z`); y.setUTCDate(y.getUTCDate() - (hour < 3 ? 2 : 1));
+  const yesterday = y.toISOString().slice(0, 10);
+  return yesterday < since ? null : { startDate: since, endDate: yesterday, timeUnit: "daily" };
+}
+const gfaList = (body: any): any[] => Array.isArray(body) ? body : body?.content || body?.rows || body?.data || body?.items || [];
+async function gfaAccounts(): Promise<AdAccount[]> {
+  const config = gfaConfig();
+  if (!config) return [];
+  const configured = (env("NAVER_GFA_AD_ACCOUNT_NO", "NAVER_GFA_ACCOUNT_ID") || "").split(",").map((v) => cleanId(v)).filter(Boolean);
+  // 매니저 계정에 연결된 광고계정 목록을 조회한다. 실패하면 환경변수에 지정한 계정으로 대체.
+  let found: AdAccount[] = [];
+  try {
+    for (let page = 0; page < 20; page++) {
+      const items = gfaList(await gfaGet("/adAccounts", { page: String(page), size: "100" }));
+      found.push(...items.map((row: any) => {
+        const id = String(row.no ?? row.adAccountNo ?? row.id ?? "");
+        return { id, channel: "naver_gfa" as const, name: row.name || row.adAccountName || `네이버 GFA ${id}` };
+      }).filter((row: AdAccount) => row.id));
+      if (items.length < 100) break;
+    }
+  } catch (error) {
+    if (!configured.length) throw error;
+    found = [];
+  }
+  for (const id of configured) if (!found.some((row) => row.id === id)) found.push({ id, channel: "naver_gfa", name: `네이버 GFA ${id}` });
+  return found;
+}
+async function gfaPaged(path: string, params: Record<string, string>) {
+  const rows: any[] = [];
+  let next: string | null = null;
+  for (let page = 0; page < 50; page++) {
+    const body = await gfaGet(path, { ...params, limit: "1000", ...(next ? { next } : {}) });
+    rows.push(...(body.rows || []));
+    next = body.next || null;
+    if (!next) break;
+  }
+  return rows;
+}
+const gfaStatus = (row: any): EntityStatus => {
+  if (typeof row.activated === "boolean") return row.activated ? "on" : "off";
+  if (typeof row.enabled === "boolean") return row.enabled ? "on" : "off";
+  return ["ON", "ACTIVE", "ENABLED", "RUNNING"].includes(String(row.status || row.campaignStatus || "").toUpperCase()) ? "on" : "off";
+};
+async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
+  const accounts = await gfaAccounts();
+  const range = gfaPastRange();
+  return settleAccounts(accounts, async (account) => {
+    const base = `/adAccounts/${account.id}`;
+    const campaigns: any[] = [];
+    for (let page = 0; page < 50; page++) {
+      const items = gfaList(await gfaGet(`${base}/campaigns`, { page: String(page), size: "100" }));
+      campaigns.push(...items);
+      if (items.length < 100) break;
+    }
+    // 일반 캠페인은 애드셋 단위, 애드부스트는 캠페인 단위로 성과가 나오므로 시트 스크립트와 같은 방식으로 합산한다.
+    const fetchRows = (path: string) => range ? gfaPaged(`${base}${path}`, range).catch(() => [] as any[]) : Promise.resolve([] as any[]);
+    const [perfSets, convSets, perfCamps, convCamps] = await Promise.all([
+      fetchRows("/performance/past/adSets"),
+      fetchRows("/performance/conversion/past/adSets"),
+      fetchRows("/performance/past/campaigns"),
+      fetchRows("/performance/conversion/past/campaigns"),
+    ]);
+    const stats = new Map<string, { spend: number; conversions: number; revenue: number }>();
+    const bucket = (no: unknown) => { const key = String(no ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, conversions: 0, revenue: 0 }); return stats.get(key)!; };
+    const adSetCampaigns = new Set([...perfSets, ...convSets].map((row) => String(row.campaignNo ?? "")));
+    for (const row of perfSets) bucket(row.campaignNo).spend += num(row.sales);
+    for (const row of perfCamps) if (!adSetCampaigns.has(String(row.campaignNo ?? ""))) bucket(row.campaignNo).spend += num(row.sales);
+    const addConv = (row: any) => { if (row.convType === "PURCHASE") { const b = bucket(row.campaignNo); b.conversions += num(row.convCount); b.revenue += num(row.convSales); } };
+    convSets.forEach(addConv);
+    convCamps.filter((row) => !adSetCampaigns.has(String(row.campaignNo ?? ""))).forEach(addConv);
+    return campaigns.map((row) => {
+      const id = String(row.no ?? row.campaignNo ?? row.id);
+      const s = stats.get(id) || { spend: 0, conversions: 0, revenue: 0 };
+      return { id: packed("naver_gfa", account.id, id), channel: "naver_gfa" as const, name: row.name || `캠페인 ${id}`,
+        dailyBudget: num(row.dailyBudget ?? row.budget?.dailyBudget ?? row.budgetAmount), status: gfaStatus(row), spend: s.spend,
+        conversions: Math.round(s.conversions), roas: s.spend ? Math.round(s.revenue / s.spend * 100) : 0, accountId: account.id, accountName: account.name };
+    }).filter((row) => includeOff || row.status === "on" || row.spend > 0);
+  });
+}
+
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
 export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
   const accounts: AdAccount[] = [];
   const errors: Partial<Record<Channel, string>> = {};
   accounts.push(...await naverAccounts().catch(() => []));
-  const gfaId = env("NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID");
-  if (gfaId) accounts.push({ id: gfaId, channel: "naver_gfa", name: `네이버 GFA ${gfaId}` });
-  const results = await Promise.allSettled([metaAccounts(), googleAccounts()]);
+  const results = await Promise.allSettled([metaAccounts(), googleAccounts(), gfaAccounts()]);
+  if (results[2].status === "fulfilled") accounts.push(...results[2].value);
+  else errors.naver_gfa = results[2].reason instanceof Error ? results[2].reason.message : String(results[2].reason);
   if (results[0].status === "fulfilled") accounts.push(...results[0].value);
   else errors.meta = results[0].reason instanceof Error ? results[0].reason.message : String(results[0].reason);
   if (results[1].status === "fulfilled") accounts.push(...results[1].value);
@@ -212,8 +346,8 @@ export async function getLiveSnapshot(includeOff = true): Promise<{ campaigns: C
   const missing = (...names: Array<string | [string, string]>) => names.filter((name) => Array.isArray(name) ? !env(name[0], name[1]) : !env(name)).map((name) => Array.isArray(name) ? `${name[0]} 또는 ${name[1]}` : name);
   const definitions: Array<{ channel: Channel; configured: boolean; missing: string[]; run?: () => Promise<Campaign[]>; unsupported?: string }> = [
     { channel: "naver_sa", missing: missing("NAVER_SA_API_KEY", "NAVER_SA_SECRET_KEY", ["NAVER_SA_CUSTOMER_ID", "NAVER_SA_MANAGER_CUSTOMER_ID"]), configured: Boolean(naverCredentials()), run: () => naverCampaigns(includeOff) },
-    { channel: "naver_gfa", missing: missing("NAVER_GFA_API_KEY", "NAVER_GFA_SECRET_KEY", ["NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID"]), configured: Boolean(env("NAVER_GFA_API_KEY") && env("NAVER_GFA_SECRET_KEY") && env("NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID")), unsupported: "연동 규격 확인 후 지원 예정" },
-    { channel: "meta", missing: missing(["META_SYSTEM_USER_ACCESS_TOKEN", "META_ACCESS_TOKEN"], ["META_BUSINESS_ID", "META_AD_ACCOUNT_ID"]), configured: Boolean(metaToken() && (env("META_BUSINESS_ID") || env("META_AD_ACCOUNT_ID"))), run: () => metaCampaigns(includeOff) },
+    { channel: "naver_gfa", missing: missing("NAVER_GFA_CLIENT_ID", "NAVER_GFA_REFRESH_TOKEN", ["NAVER_GFA_MANAGER_ACCOUNT_NO", "NAVER_GFA_MANAGER_ACCOUNT_ID"]), configured: Boolean(gfaConfig()), run: () => gfaCampaigns(includeOff) },
+    { channel: "meta", missing: missing(["META_SYSTEM_USER_ACCESS_TOKEN", "META_ACCESS_TOKEN"]), configured: Boolean(metaToken()), run: () => metaCampaigns(includeOff) },
     { channel: "google_ads", missing: missing("GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET", "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_LOGIN_CUSTOMER_ID"), configured: Boolean(env("GOOGLE_ADS_DEVELOPER_TOKEN") && env("GOOGLE_ADS_CLIENT_ID") && env("GOOGLE_ADS_CLIENT_SECRET") && env("GOOGLE_ADS_REFRESH_TOKEN") && env("GOOGLE_ADS_LOGIN_CUSTOMER_ID")), run: () => googleCampaigns(includeOff) },
   ];
   const results = await Promise.all(definitions.map(async (definition) => {
