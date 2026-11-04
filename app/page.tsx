@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Advertiser, MediaMix } from "@/lib/mix";
-import { mixTotalBudget } from "@/lib/mix";
+import { matchMix, mixTotalBudget } from "@/lib/mix";
 import { ReportView } from "./report-view";
 import { MixView } from "./mix-view";
 import { CreativeView } from "./creative-view";
@@ -243,6 +243,20 @@ export default function Dashboard() {
   }
 
   const selectedAdvertiser = advertisers.find((item) => item.id === selectedAdvertiserId);
+  const advertiserCampaigns = useMemo(() => selectedAdvertiser ? campaigns.filter((c) => selectedAdvertiser.accountKeys.includes(`${c.channel}:${c.accountId}`)) : [], [campaigns, selectedAdvertiser]);
+  // 이번 달 믹스 라인별 실적 (AI 어시스턴트에 요약만 넘겨 토큰을 아낀다)
+  const currentMonth = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit" }).format(new Date()).slice(0, 7);
+  const mixLineSummary = useMemo(() => {
+    const mix = mixes.find((m) => m.month === currentMonth);
+    if (!mix?.lines?.length) return undefined;
+    const { results, unassigned } = matchMix(mix.lines, advertiserCampaigns.filter((c) => (c.active ?? c.status === "on") || c.spend > 0));
+    return {
+      month: mix.month,
+      lines: results.map((r) => ({ line: r.line.name, channel: r.line.channel, budget: r.line.budget, targetRoas: r.line.targetRoas, spend: Math.round(r.spend), roas: Math.round(r.roas), campaigns: r.campaigns.map((c) => c.id) })),
+      unassigned: { count: unassigned.length, spend: Math.round(unassigned.reduce((s, c) => s + c.spend, 0)) },
+    };
+  }, [mixes, advertiserCampaigns, currentMonth]);
+
   const scopedCampaigns = campaigns.filter((campaign) => {
     if (!selectedAdvertiser) return false;
     const mapped = selectedAdvertiser.accountKeys.includes(`${campaign.channel}:${campaign.accountId}`);
@@ -362,7 +376,7 @@ export default function Dashboard() {
     setSending(true);
     try {
       const history = next.map(({ role, content }) => ({ role, content }));
-      const response = await apiFetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, context: { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes } }) });
+      const response = await apiFetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, context: { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes, mixLineSummary } }) });
       const data = await response.json();
       setMessages((current) => [...current, { role: "assistant", content: response.ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts }]);
     } catch {
@@ -449,7 +463,7 @@ export default function Dashboard() {
       {staleKeys.length > 0 && <div className="stale-box"><b>조회되지 않는 계정이 매핑돼 있어요: {staleKeys.join(", ")}</b><span>매니저 계정 번호이거나 접근 권한이 없어진 계정입니다. <button className="link-button" onClick={() => setView("mapping")}>계정 매핑에서 정리하기</button></span></div>}
 
       {dashTab === "report" && <ReportView accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
-      {dashTab === "mix" && selectedAdvertiser && <MixView advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
+      {dashTab === "mix" && selectedAdvertiser && <MixView campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
       {dashTab === "creative" && <CreativeView accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} />}
       {dashTab === "ops" && <>
       <section className="metrics">

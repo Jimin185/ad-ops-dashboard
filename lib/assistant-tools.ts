@@ -80,7 +80,7 @@ export const assistantTools = [
   },
   {
     name: "get_mixes",
-    description: "선택한 광고주의 저장된 월별 미디어 믹스(채널별 월예산·목표 ROAS·메모·회고)를 조회합니다.",
+    description: "선택한 광고주의 월별 미디어 믹스(채널·라인별 월예산·목표 ROAS·메모·회고)와 이번 달 라인별 실적(집행액·ROAS·연결 캠페인 ID)을 조회합니다. 믹스 대비 성과나 예산 조정은 이 결과로 판단하세요.",
     strict: true,
     input_schema: { type: "object", properties: {}, required: [], additionalProperties: false },
   },
@@ -165,14 +165,19 @@ export const assistantTools = [
 
 type ToolInput = Record<string, unknown>;
 
-export type AssistantContext = { advertiserId?: string; advertiserName?: string; accountKeys: string[]; mixes?: MediaMix[] };
+export type MixLineSummary = { month: string; lines: Array<{ line: string; channel: string; budget: number; targetRoas: number; spend: number; roas: number; campaigns: string[] }>; unassigned: { count: number; spend: number } };
+export type AssistantContext = { advertiserId?: string; advertiserName?: string; accountKeys: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary };
 
 const inScope = (ctx: AssistantContext, campaign: { channel: Channel; accountId?: string }) =>
   !ctx.accountKeys.length || ctx.accountKeys.includes(`${campaign.channel}:${campaign.accountId}`);
 
 export async function executeAssistantTool(name: string, input: ToolInput, ctx: AssistantContext = { accountKeys: [] }): Promise<{ result: unknown; pending?: PendingAction; mixDraft?: MediaMix }> {
   const adapter = getAdapter();
-  if (name === "get_mixes") return { result: { mixes: (ctx.mixes || []).map(({ month, status, targetRoas, channels, notes, review }) => ({ month, status, targetRoas, channels, notes, review })) } };
+  if (name === "get_mixes") return { result: {
+    mixes: (ctx.mixes || []).map(({ month, status, targetRoas, channels, notes, review, lines }) => ({ month, status, targetRoas, channels, notes, review, lines: lines?.map((l) => ({ name: l.name, channel: l.channel, budget: l.budget, targetRoas: l.targetRoas, keywords: l.keywords })) })),
+    // 이번 달 라인별 실적은 화면에서 이미 계산된 값 (캠페인 ID 목록 포함 → update_budget에 바로 사용 가능)
+    currentMonthLines: ctx.mixLineSummary,
+  } };
   if (name === "propose_mix") {
     if (!ctx.advertiserId) return { result: { error: "광고주가 선택되지 않았습니다." } };
     const existing = ctx.mixes?.find((mix) => mix.month === input.month);
