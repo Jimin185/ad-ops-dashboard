@@ -27,7 +27,9 @@ async function jsonFetch(url: string, init?: RequestInit) {
   try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
   if (!response.ok) {
     const detail = body?.error?.details?.flatMap((item: any) => item?.errors || [])?.[0];
-    const message = detail?.message || detail?.errorCode && JSON.stringify(detail.errorCode) || body?.error?.message || body?.message || `${response.status} ${response.statusText}`;
+    const message = detail?.message || detail?.errorCode && JSON.stringify(detail.errorCode) || body?.error?.message || body?.message || body?.title || body?.detail || `${response.status} ${response.statusText}`;
+    const code = body?.code ?? body?.error?.code;
+    if (code !== undefined && !String(message).includes(String(code))) throw new Error(`${message} (code ${code}, HTTP ${response.status})`);
     throw new Error(message);
   }
   return body;
