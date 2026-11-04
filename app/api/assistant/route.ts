@@ -19,6 +19,7 @@ const SYSTEM_PROMPT = `당신은 광고대행사의 광고 운영 어시스턴�
 - 변경 요청은 먼저 목록을 조회해 정확한 ID와 현재값을 확인한 뒤 변경 도구를 호출하세요. 변경 도구 결과가 pending_user_confirmation이면 아직 적용되지 않았으니 확인 카드에서 적용하라고 안내하세요.
 - 이름이 겹치거나 의도가 모호하면 임의로 고르지 말고 물어보세요.
 - 금액은 별도 언급이 없으면 KRW입니다. 일예산과 월예산을 구분하세요. ROAS는 매출÷광고비×100(%)입니다.
+- 사용자가 믹스 파일(엑셀·CSV·PDF)을 첨부하면 내용을 읽고 propose_mix로 해당 월 믹스 초안을 올리세요. 라인별 매칭 키워드도 함께 제안하면 좋습니다.
 - 월별 미디어 믹스: get_mixes로 기존 믹스와 회고를, get_report로 실적을 확인한 뒤 propose_mix로 초안을 올리세요. 초안은 사용자가 카드에서 확인해야 저장됩니다.
 - 믹스 대비 성과·예산 조정은 get_mixes의 currentMonthLines(라인별 집행액·ROAS·연결 캠페인 ID)를 먼저 쓰세요. 이미 계산된 값이라 캠페인 전체 조회가 필요 없습니다.
 - 믹스대로 예산을 맞추는 요청은 (라인 월예산 - 집행액) ÷ 남은 일수를 라인의 운영 중 캠페인에 나눠 일예산 변경안(update_budget)으로 만드세요. Google Ads 예산 변경은 아직 지원되지 않으니 안내만 하세요.
@@ -45,13 +46,26 @@ async function handle(request: Request) {
   }
 
   try {
-    const body = (await request.json()) as { messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
+    const body = (await request.json()) as { attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
     const history = (body.messages || []).slice(-20);
     if (!history.length) return Response.json({ error: "메시지를 입력해 주세요." }, { status: 400 });
     const ctx: AssistantContext = { advertiserId: body.context?.advertiserId, advertiserName: body.context?.advertiserName, accountKeys: (body.context?.accountKeys || []).slice(0, 50), mixes: (body.context?.mixes || []).slice(0, 12), mixLineSummary: body.context?.mixLineSummary };
 
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const messages: Anthropic.Beta.BetaMessageParam[] = history.map((message) => ({ role: message.role, content: message.content }));
+    // 이번 메시지에 붙은 첨부 파일: 표·텍스트는 텍스트로, PDF·이미지는 Claude가 직접 읽게 넣는다
+    const files = (body.attachments || []).slice(0, 5);
+    if (files.length && messages.length && messages[messages.length - 1].role === "user") {
+      const last = messages[messages.length - 1];
+      const blocks: any[] = [];
+      for (const f of files) {
+        if (f.kind === "text") blocks.push({ type: "text", text: `[첨부 파일: ${f.name}]\n${String(f.data).slice(0, 60_000)}` });
+        else if (f.kind === "pdf") blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: f.data }, title: f.name });
+        else if (f.kind === "image" && /^image\/(png|jpeg|webp|gif)$/.test(f.mediaType || "")) blocks.push({ type: "image", source: { type: "base64", media_type: f.mediaType, data: f.data } });
+      }
+      blocks.push({ type: "text", text: String(last.content) });
+      messages[messages.length - 1] = { role: "user", content: blocks };
+    }
     // 현재 화면의 광고주 정보는 매 요청 바뀌므로 캐시되는 system 프롬프트가 아니라 대화 끝에 붙인다.
     messages.push({ role: "user", content: `[현재 화면] 광고주: ${ctx.advertiserName || "미선택"} · 매핑 계정 ${ctx.accountKeys.length}개 · 오늘(KST): ${seoulDate()}` });
     const pendingActions: PendingAction[] = [];

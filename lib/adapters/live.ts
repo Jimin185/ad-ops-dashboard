@@ -1037,13 +1037,18 @@ export const liveAdapter = {
   },
   async apply(operation: ChangeOperation) {
     if (operation.kind === "media_plan") return executeMediaPlan(operation.steps as MediaStep[], operation.accountKeys);
-    if (operation.channel === "naver_gfa") throw new Error("네이버 GFA 변경 API 규격 확인 전에는 변경할 수 없습니다.");
+    if (operation.channel === "naver_gfa") throw new Error("GFA는 화면에서 바로 변경할 수 없어요. AI 어시스턴트에게 요청하면 GFA API로 변경안을 만들어 드려요.");
     if (operation.kind === "create_text_ad") throw new Error("네이버 SA 소재 생성은 트래킹 템플릿 검증 후 지원됩니다.");
     const key = unpack(operation.id);
     if (operation.channel === "naver_sa") {
+      // 네이버 SA 수정은 ?fields=로 바꿀 항목을 지정하고, 본문에 대상 ID를 함께 넣어야 한다
+      const idField = operation.entityType === "campaign" ? "nccCampaignId" : operation.entityType === "adgroup" ? "nccAdgroupId" : "nccAdId";
       const endpoint = operation.entityType === "campaign" ? `/ncc/campaigns/${key.id}` : operation.entityType === "adgroup" ? `/ncc/adgroups/${key.id}` : `/ncc/ads/${key.id}`;
-      if (operation.kind === "set_status") await naverRequest("PUT", endpoint, { userLock: operation.status === "off" }, key.account);
-      else await naverRequest("PUT", endpoint, { dailyBudget: operation.dailyBudget }, key.account);
+      if (operation.kind === "set_status") await naverRequest("PUT", `${endpoint}?fields=userLock`, { [idField]: key.id, userLock: operation.status === "off" }, key.account);
+      else {
+        if (operation.entityType === "ad") throw new Error("네이버 SA 소재에는 예산이 없습니다.");
+        await naverRequest("PUT", `${endpoint}?fields=budget`, { [idField]: key.id, dailyBudget: operation.dailyBudget, useDailyBudget: true }, key.account);
+      }
       return { success: true, changed: 1 };
     }
     if (operation.channel === "meta") {
