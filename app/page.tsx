@@ -7,6 +7,9 @@ import { ReportView } from "./report-view";
 import { MixView } from "./mix-view";
 import { CreativeView } from "./creative-view";
 import { SaView } from "./sa-view";
+import { MarketView } from "./market-view";
+import { InsightsView } from "./insights-view";
+import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from "./filter-bar";
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
@@ -121,9 +124,10 @@ export default function Dashboard() {
   const [accountErrors, setAccountErrors] = useState<Partial<Record<Channel, string>>>({});
   const [advertisers, setAdvertisers] = useState<Advertiser[]>([]);
   const [selectedAdvertiserId, setSelectedAdvertiserId] = useState("");
-  const [view, setView] = useState<"select" | "mapping" | "dashboard">("select");
-  const [selectedChannel, setSelectedChannel] = useState<Channel | "all">("all");
+  const [view, setView] = useState<"select" | "mapping" | "dashboard" | "market" | "insights">("select");
   const [campaignQuery, setCampaignQuery] = useState("");
+  const [opsFilter, setOpsFilter] = useState<Filter>(EMPTY_FILTER);
+  const [balances, setBalances] = useState<Array<{ customerId: string; bizmoney?: number; budgetLock?: boolean; error?: string }>>([]);
   const [showInactive, setShowInactive] = useState(false);
   const [showInactiveGroups, setShowInactiveGroups] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
@@ -215,6 +219,25 @@ export default function Dashboard() {
     return () => clearTimeout(timer);
   }, [advertisers, storageMode]);
 
+  // 매핑이 바뀐 광고주는 올해 1월~지난달 월별 데이터를 백그라운드로 적재한다 (이미 있는 달은 건너뜀)
+  const backfilled = useRef(new Set<string>());
+  useEffect(() => {
+    if (storageMode !== "supabase") return;
+    const keys = [...new Set(advertisers.flatMap((a) => a.accountKeys))].filter((k) => !backfilled.current.has(k));
+    if (!keys.length) return;
+    const timer = setTimeout(() => {
+      keys.forEach((k) => backfilled.current.add(k));
+      void (async () => {
+        for (let i = 0; i < 20; i++) {
+          const r = await apiFetch("/api/monthly", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts: keys }) }).catch(() => null);
+          const d = await r?.json().catch(() => null);
+          if (!d || d.status !== "loading") break;
+        }
+      })();
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [advertisers, storageMode]);
+
   // 선택한 광고주의 믹스
   const loadMixes = useCallback(async (advertiserId: string) => {
     if (!advertiserId) return setMixes([]);
@@ -268,11 +291,19 @@ export default function Dashboard() {
     };
   }, [mixes, advertiserCampaigns, currentMonth]);
 
-  const scopedCampaigns = campaigns.filter((campaign) => {
-    if (!selectedAdvertiser) return false;
-    const mapped = selectedAdvertiser.accountKeys.includes(`${campaign.channel}:${campaign.accountId}`);
-    return mapped && (selectedChannel === "all" || campaign.channel === selectedChannel);
-  });
+  const currentMixLines = mixes.find((m) => m.month === currentMonth)?.lines;
+  const campaignsById = useMemo(() => new Map(advertiserCampaigns.map((c) => [c.id, c])), [advertiserCampaigns]);
+  const lineSets = useMemo(() => lineCampaignIds(currentMixLines, advertiserCampaigns), [currentMixLines, advertiserCampaigns]);
+  const scopedCampaigns = advertiserCampaigns.filter((campaign) => passes(opsFilter, { ...campaign, campaignId: campaign.id }, campaignsById, lineSets));
+
+  // 네이버 SA 비즈머니 잔액
+  const saIds = (selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => k.slice(9));
+  useEffect(() => {
+    if (dashTab !== "ops" || !saIds.length) return;
+    void apiFetch(`/api/bizmoney?ids=${saIds.join(",")}`).then((r) => r.json()).then((d) => setBalances(d.balances || []));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashTab, saIds.join(",")]);
+  const hasGfa = (selectedAdvertiser?.accountKeys || []).some((k) => k.startsWith("naver_gfa:"));
 
   // 돌아가는 캠페인만 기본 표시. 검색하면 꺼진/종료된 것도 함께 보여준다.
   const query = campaignQuery.trim().toLowerCase();
@@ -283,7 +314,7 @@ export default function Dashboard() {
     .sort((a, b) => Number(isRunning(b)) - Number(isRunning(a)) || b.spend - a.spend);
 
   // 매핑되지 않아 표에서 빠진 캠페인 수 (빈 화면일 때 원인 안내용)
-  const unmappedCount = campaigns.filter((campaign) => selectedChannel === "all" || campaign.channel === selectedChannel).length - scopedCampaigns.length;
+  const unmappedCount = advertiserCampaigns.length ? 0 : campaigns.length;
 
   const totals = useMemo(() => ({
     spend: scopedCampaigns.reduce((sum, row) => sum + row.spend, 0),
@@ -406,14 +437,49 @@ export default function Dashboard() {
     }
   }
 
+  const chatUi = (<>
+      <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="AI 어시스턴트 열기">✦</button>
+      {chatOpen && <aside className="chat-panel">
+        <div className="chat-head"><div><b>AI 광고 운영 어시스턴트</b><small>변경은 승인 후 적용됩니다</small></div><button onClick={() => setChatOpen(false)}>×</button></div>
+        <div className="messages">
+          {messages.map((message, index) => <div className={`message ${message.role}`} key={index}>
+            <MarkdownLite value={message.content} />
+            {message.usage && <small className="usage-note">토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
+            {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
+            {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(true); }} />)}
+          </div>)}
+          {sending && <div className="message assistant"><span className="typing">● ● ●</span> <button className="link-button" onClick={stopMessage}>중지</button></div>}
+        </div>
+        <div className="suggestions"><button onClick={() => setInput("이번 달 채널별 성과를 믹스 목표와 비교해줘")}>믹스 대비 성과</button><button onClick={() => setInput("다음 달 미디어 믹스 초안 만들어줘")}>다음 달 믹스</button><button onClick={() => setInput("이번 달 믹스대로 남은 기간 일예산 조정안 만들어줘")}>믹스대로 예산 조정</button><button onClick={() => setInput("성과 좋은 소재 기준으로 Meta 카피 시안 3개 써줘")}>카피 시안</button></div>
+        <div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} placeholder="예: 브랜드 캠페인 일예산 5만원으로 올려줘" />{sending ? <button className="stop-button" onClick={stopMessage}>■ 중지</button> : <button disabled={!input.trim()} onClick={() => void sendMessage()}>전송</button>}</div>
+      </aside>}
+  </>);
+
+  if (view === "market") return (
+    <main>
+      <header><div><span className="eyebrow">CREATIP · MARKET INSIGHT</span><h1>시장 인사이트</h1><p>키워드 검색량·트렌드와 뉴스·블로그·카페 반응으로 시장 상황을 확인합니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
+      <MarketView onAsk={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} />
+      {chatUi}
+    </main>
+  );
+
+  if (view === "insights") return (
+    <main>
+      <header><div><span className="eyebrow">CREATIP · AD INSIGHT</span><h1>광고인사이트</h1><p>광고주 전체의 월별 성과를 광고상품별로 비교하고, 팀이 발견한 인사이트를 공유합니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
+      <InsightsView advertisers={advertisers} accounts={accounts} apiFetch={apiFetch} onAsk={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} />
+      {chatUi}
+    </main>
+  );
+
   if (view === "select") return (
     <main>
-      <header><div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>광고주 선택</h1><p>운영할 광고주를 선택하면 연결된 매체 계정을 한 번에 불러옵니다.</p></div><button className="secondary" onClick={() => setView("mapping")}>광고계정 매핑</button></header>
+      <header><div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>광고주 선택</h1><p>운영할 광고주를 선택하면 연결된 매체 계정을 한 번에 불러옵니다.</p></div><div className="header-actions"><button className="secondary" onClick={() => setView("market")}>🔎 시장 인사이트</button><button className="secondary" onClick={() => setView("insights")}>📊 광고인사이트</button><button className="secondary" onClick={() => setView("mapping")}>광고계정 매핑</button></div></header>
       <section className="advertiser-picker">
         <div className="advertiser-grid">{advertisers.map((advertiser) => <button key={advertiser.id} onClick={() => { setSelectedAdvertiserId(advertiser.id); setView("dashboard"); }}><b>{advertiser.name}</b><span>{advertiser.accountKeys.length}개 광고계정</span></button>)}</div>
         {!advertisers.length && <div className="empty-state"><b>등록된 광고주가 없습니다.</b><span>먼저 광고주를 만들고 광고계정을 매핑해 주세요.</span></div>}
         <button className="primary" onClick={createAdvertiser}>+ 광고주 만들기</button>
       </section>
+      {chatUi}
     </main>
   );
 
@@ -485,7 +551,7 @@ export default function Dashboard() {
       {dashTab === "report" && <ReportView accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
       {dashTab === "mix" && selectedAdvertiser && <MixView campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
       {dashTab === "sa" && <SaView apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
-      {dashTab === "creative" && <CreativeView accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} />}
+      {dashTab === "creative" && <CreativeView accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
       {dashTab === "ops" && <>
       <section className="metrics">
           <article><span>이번 달 광고비</span><strong>{won.format(totals.spend)}</strong><small>연결 채널 통합</small></article>
@@ -501,7 +567,17 @@ export default function Dashboard() {
           </article>)}
         </section>}
   
-        <nav className="channel-tabs"><button className={selectedChannel === "all" ? "active" : ""} onClick={() => setSelectedChannel("all")}>전체</button>{(Object.keys(channelLabel) as Channel[]).map((channel) => <button key={channel} className={selectedChannel === channel ? "active" : ""} onClick={() => setSelectedChannel(channel)}>{channelLabel[channel]}</button>)}</nav>
+        {(saIds.length > 0 || hasGfa) && <section className="balance-row">
+          {saIds.map((id) => { const b = balances.find((x) => x.customerId === id); const daily = advertiserCampaigns.filter((c) => c.channel === "naver_sa" && c.accountId === id).reduce((s, c) => s + c.spend, 0) / Math.max(1, Number(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", day: "2-digit" }).format(new Date())));
+            return <article key={id} className={`balance-card ${b?.bizmoney !== undefined && daily && b.bizmoney / daily < 7 ? "low" : ""}`}>
+              <span>네이버 SA 비즈머니 · {accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || id}</span>
+              <strong>{b?.error ? "조회 실패" : b?.bizmoney !== undefined ? won.format(b.bizmoney) : "…"}</strong>
+              <small>{b?.error ? b.error : b?.bizmoney !== undefined && daily ? `이번 달 일평균 광고비 기준 약 ${Math.floor(b.bizmoney / daily)}일분${b.budgetLock ? " · 예산 잠금" : ""}` : ""}</small>
+            </article>; })}
+          {hasGfa && <article className="balance-card muted"><span>네이버 GFA 잔액</span><strong>API 미제공</strong><small>GFA API에는 잔액 조회 기능이 없어요. GFA 광고관리시스템에서 확인해 주세요.</small></article>}
+        </section>}
+
+        <FilterBar value={opsFilter} onChange={setOpsFilter} accountKeys={selectedAdvertiser?.accountKeys || []} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />
   
         <section className="panel">
           <div className="panel-head"><div><h2>캠페인</h2><p>운영 중인 캠페인 {runningCount.toLocaleString()}개{hiddenCount ? ` · 꺼짐/종료 ${hiddenCount.toLocaleString()}개 숨김` : ""}. 검색하면 숨긴 캠페인도 찾을 수 있어요.</p></div><span className="fetched-at">{campaignsFetchedAt ? `${new Date(campaignsFetchedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 기준` : ""}</span><button className="secondary" onClick={() => void refresh(true)}>새로고침</button></div>
@@ -514,8 +590,8 @@ export default function Dashboard() {
             <table className="campaign-table">
               <thead><tr><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
               <tbody>
-                {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && visibleCampaigns.length === 0 ? <tr><td colSpan={6}>{scopedCampaigns.length ? (query ? "검색 결과가 없습니다." : `운영 중인 캠페인이 없습니다. 꺼짐/종료 ${hiddenCount}개는 '꺼짐/종료 포함'을 켜면 보여요.`) : unmappedCount > 0
-                  ? <>{selectedChannel === "all" ? "" : `${channelLabel[selectedChannel]} `}캠페인 {unmappedCount.toLocaleString()}개가 있지만 이 광고주에 매핑된 계정이 없습니다. <button className="secondary" onClick={() => setView("mapping")}>계정 매핑하기</button></>
+                {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && visibleCampaigns.length === 0 ? <tr><td colSpan={6}>{scopedCampaigns.length ? (query ? "검색 결과가 없습니다." : `운영 중인 캠페인이 없습니다. 꺼짐/종료 ${hiddenCount}개는 '꺼짐/종료 포함'을 켜면 보여요.`) : advertiserCampaigns.length ? "선택한 필터에 맞는 캠페인이 없습니다." : unmappedCount > 0
+                  ? <>캠페인 {unmappedCount.toLocaleString()}개가 있지만 이 광고주에 매핑된 계정이 없습니다. <button className="secondary" onClick={() => setView("mapping")}>계정 매핑하기</button></>
                   : "이 광고주에 매핑된 캠페인이 없습니다."}</td></tr> : visibleCampaigns.map((campaign) => (
                   <tr key={campaign.id} className={isRunning(campaign) ? "" : "inactive-row"} onClick={() => void openCampaign(campaign)}>
                     <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
@@ -536,21 +612,7 @@ export default function Dashboard() {
         {selectedCampaign && <section className="panel detail-panel"><div className="panel-head"><div><h2>{selectedCampaign.name}</h2><p>광고그룹/광고세트를 선택하면 소재를 조회합니다.</p></div><button className="secondary" onClick={() => setSelectedCampaign(null)}>닫기</button></div>{detailError && <div className="connection-error">{detailError}</div>}<div className="entity-list">{adgroups.some((group) => !isRunning(group)) && <label className="toggle entity-toggle"><input type="checkbox" checked={showInactiveGroups} onChange={(e) => setShowInactiveGroups(e.target.checked)} /> 꺼짐/종료 광고그룹 {adgroups.filter((group) => !isRunning(group)).length}개 보기</label>}{adgroups.filter((group) => showInactiveGroups || isRunning(group)).map((group) => <div className={`entity-group ${isRunning(group) ? "" : "inactive-row"}`} key={group.id}><button onClick={() => void loadAds(group)}><b>{group.name}</b><span>{won.format(group.dailyBudget)} · {group.status.toUpperCase()}</span></button>{adsByGroup[group.id]?.map((ad) => <div className="ad-row" key={ad.id}><span>소재</span><b>{ad.name}</b><em>{ad.status.toUpperCase()}</em></div>)}</div>)}</div></section>}
       </>}
 
-      <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="AI 어시스턴트 열기">✦</button>
-      {chatOpen && <aside className="chat-panel">
-        <div className="chat-head"><div><b>AI 광고 운영 어시스턴트</b><small>변경은 승인 후 적용됩니다</small></div><button onClick={() => setChatOpen(false)}>×</button></div>
-        <div className="messages">
-          {messages.map((message, index) => <div className={`message ${message.role}`} key={index}>
-            <MarkdownLite value={message.content} />
-            {message.usage && <small className="usage-note">토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
-            {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
-            {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(true); }} />)}
-          </div>)}
-          {sending && <div className="message assistant"><span className="typing">● ● ●</span> <button className="link-button" onClick={stopMessage}>중지</button></div>}
-        </div>
-        <div className="suggestions"><button onClick={() => setInput("이번 달 채널별 성과를 믹스 목표와 비교해줘")}>믹스 대비 성과</button><button onClick={() => setInput("다음 달 미디어 믹스 초안 만들어줘")}>다음 달 믹스</button><button onClick={() => setInput("이번 달 믹스대로 남은 기간 일예산 조정안 만들어줘")}>믹스대로 예산 조정</button><button onClick={() => setInput("성과 좋은 소재 기준으로 Meta 카피 시안 3개 써줘")}>카피 시안</button></div>
-        <div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} placeholder="예: 브랜드 캠페인 일예산 5만원으로 올려줘" />{sending ? <button className="stop-button" onClick={stopMessage}>■ 중지</button> : <button disabled={!input.trim()} onClick={() => void sendMessage()}>전송</button>}</div>
-      </aside>}
+      {chatUi}
     </main>
   );
 }

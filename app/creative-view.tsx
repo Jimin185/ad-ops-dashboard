@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { CreativeRow } from "@/lib/types";
+import type { AdAccount, Campaign, CreativeRow } from "@/lib/types";
+import type { MixLine } from "@/lib/mix";
+import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from "./filter-bar";
 import { periodRange } from "./report-view";
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
@@ -11,10 +13,12 @@ const SORTS: Array<{ key: Sort; label: string }> = [{ key: "spend", label: "광�
 const roas = (r: CreativeRow) => r.spend ? r.revenue / r.spend * 100 : 0;
 const ctr = (r: CreativeRow) => r.impressions ? r.clicks / r.impressions * 100 : 0;
 
-export function CreativeView({ accountKeys, apiFetch }: { accountKeys: string[]; apiFetch: (url: string, init?: RequestInit) => Promise<Response> }) {
+export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines }: { accountKeys: string[]; apiFetch: (url: string, init?: RequestInit) => Promise<Response>; accounts: AdAccount[]; campaigns: Campaign[]; lines?: MixLine[] }) {
   const targets = accountKeys.filter((key) => key.startsWith("meta:") || key.startsWith("naver_gfa:"));
   const [period, setPeriod] = useState<Period>("this_month");
-  const [channel, setChannel] = useState<"all" | "meta" | "naver_gfa">("all");
+  const [filter, setFilter] = useState<Filter>(EMPTY_FILTER);
+  const campaignsById = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
+  const lineSets = useMemo(() => lineCampaignIds(lines, campaigns), [lines, campaigns]);
   const [sort, setSort] = useState<Sort>("spend");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<CreativeRow[]>([]);
@@ -39,9 +43,9 @@ export function CreativeView({ accountKeys, apiFetch }: { accountKeys: string[];
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const metric = { spend: (r: CreativeRow) => r.spend, roas, ctr, conversions: (r: CreativeRow) => r.conversions }[sort];
-    return rows.filter((r) => (channel === "all" || r.channel === channel) && (!q || `${r.name} ${r.campaignName || ""} ${r.groupName || ""} ${r.headline || ""}`.toLowerCase().includes(q)))
+    return rows.filter((r) => passes(filter, r, campaignsById, lineSets) && (!q || `${r.name} ${r.campaignName || ""} ${r.groupName || ""} ${r.headline || ""}`.toLowerCase().includes(q)))
       .sort((a, b) => metric(b) - metric(a));
-  }, [rows, channel, sort, query]);
+  }, [rows, filter, sort, query, campaignsById, lineSets]);
   const avgRoas = useMemo(() => { const s = visible.reduce((a, r) => a + r.spend, 0); return s ? visible.reduce((a, r) => a + r.revenue, 0) / s * 100 : 0; }, [visible]);
 
   if (!targets.length) return <section className="report"><div className="empty-state"><b>Meta·GFA 계정이 매핑되어 있지 않습니다.</b><span>소재 성과는 Meta와 네이버 GFA 계정에서 볼 수 있습니다.</span></div></section>;
@@ -50,8 +54,8 @@ export function CreativeView({ accountKeys, apiFetch }: { accountKeys: string[];
     <section className="report">
       <div className="report-toolbar">
         <nav className="channel-tabs">{([["this_month", "이번 달"], ["last_month", "지난 달"], ["last_30", "최근 30일"]] as Array<[Period, string]>).map(([key, label]) => <button key={key} className={period === key ? "active" : ""} onClick={() => setPeriod(key)}>{label}</button>)}</nav>
-        <nav className="channel-tabs">{([["all", "전체"], ["meta", "Meta"], ["naver_gfa", "네이버 GFA"]] as const).map(([key, label]) => <button key={key} className={channel === key ? "active" : ""} onClick={() => setChannel(key)}>{label}</button>)}</nav>
       </div>
+      <FilterBar value={filter} onChange={setFilter} accountKeys={accountKeys} accounts={accounts} campaigns={campaigns} lines={lines} channels={["meta", "naver_gfa"]} />
       <div className="creative-toolbar">
         <input className="account-search" type="search" placeholder="소재·캠페인·광고세트 이름으로 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
         <label className="sort-select">정렬 <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>{SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</select></label>

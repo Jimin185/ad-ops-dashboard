@@ -67,7 +67,7 @@ async function naverSigned(key: NaverKey, method: string, path: string, body?: u
   });
 }
 
-async function naverRequest(method: string, path: string, body?: unknown, customerId?: string) {
+export async function naverRequest(method: string, path: string, body?: unknown, customerId?: string) {
   return naverSigned(naverKeyFor(customerId), method, path, body);
 }
 
@@ -812,29 +812,53 @@ export async function executeMediaPlan(steps: MediaStep[], allowedKeys: string[]
   return { success: true, completed: steps.length, results };
 }
 
-// TEMP: NAVER API HUB 경로 확인용
-export async function debugNewApis() {
-  const out: Record<string, unknown> = {};
-  const id = env("NAVER_OPENAPI_KEY_ID") || "", key = env("NAVER_OPENAPI_KEY") || "";
-  const h = { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key, "Content-Type": "application/json" };
-  const base = "https://naverapihub.apigw.ntruss.com";
-  const q = encodeURIComponent("데스커 책상");
-  const trend = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", keywordGroups: [{ groupName: "책상", keywords: ["책상"] }] });
-  const shop = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", category: [{ name: "가구", param: ["50000004"] }] });
-  const shopKw = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", category: "50000004", keyword: [{ name: "책상", param: ["책상"] }] });
-  const tries: Array<[string, string, RequestInit]> = [
-    ["news", `${base}/search/v1/news?query=${q}&display=2`, { headers: h }],
-    ["blog", `${base}/search/v1/blog?query=${q}&display=2`, { headers: h }],
-    ["cafe", `${base}/search/v1/cafearticle?query=${q}&display=2`, { headers: h }],
-    ["datalab_search", `${base}/datalab/v1/search`, { method: "POST", headers: h, body: trend }],
-    ["datalab_shop_categories", `${base}/datalab/v1/shopping/categories`, { method: "POST", headers: h, body: shop }],
-    ["datalab_shop_kw", `${base}/datalab/v1/shopping/category/keywords`, { method: "POST", headers: h, body: shopKw }],
-    ["datalab_search_v2", `${base}/search-trend/v1/search`, { method: "POST", headers: h, body: trend }],
-    ["datalab_shop_v2", `${base}/shopping-insight/v1/categories`, { method: "POST", headers: h, body: shop }],
-  ];
-  for (const [name, url, init] of tries) {
-    try { const r = await fetch(url, { ...init, cache: "no-store" }); out[name] = { status: r.status, body: (await r.text()).slice(0, 350) }; }
-    catch (e) { out[name] = { error: String(e) }; }
+// ---- 월별 적재 (연초~전월, 캠페인 단위) ----
+export type MonthlyRow = { channel: Channel; accountId: string; month: string; campaignId: string; campaignName: string; product: string; imp: number; clk: number; cost: number; conv: number; revenue: number };
+const monthBounds = (month: string) => { const [y, m] = month.split("-").map(Number); return { since: `${month}-01`, until: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) }; };
+
+/** 한 계정의 여러 달 캠페인 성과. Google·Meta는 한 번에, GFA·SA는 달마다 조회한다. */
+export async function fetchMonthly(channel: Channel, accountId: string, months: string[]): Promise<MonthlyRow[]> {
+  if (!months.length) return [];
+  const since = monthBounds(months[0]).since, until = monthBounds(months[months.length - 1]).until;
+  const base = { channel, accountId };
+  if (channel === "google_ads") {
+    const rows = await googleSearch(accountId, `SELECT segments.month, campaign.id, campaign.name, campaign.advertising_channel_type, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE segments.date BETWEEN '${since}' AND '${until}' AND metrics.impressions > 0`);
+    return rows.map((r: any) => ({ ...base, month: String(r.segments.month).slice(0, 7), campaignId: String(r.campaign.id), campaignName: r.campaign.name, product: productOf(r.campaign.advertisingChannelType) || "", imp: num(r.metrics.impressions), clk: num(r.metrics.clicks), cost: num(r.metrics.costMicros) / 1e6, conv: num(r.metrics.conversions), revenue: num(r.metrics.conversionsValue) }));
+  }
+  if (channel === "meta") {
+    const rows = await metaPaged(`act_${accountId}/insights`, { level: "campaign", time_increment: "monthly", time_range: JSON.stringify({ since, until }), fields: "campaign_id,campaign_name,objective,spend,impressions,clicks,actions,action_values" });
+    return rows.map((r: any) => ({ ...base, month: String(r.date_start).slice(0, 7), campaignId: String(r.campaign_id), campaignName: r.campaign_name, product: productOf(r.objective) || "", imp: num(r.impressions), clk: num(r.clicks), cost: num(r.spend), conv: metaPick(r.actions), revenue: metaPick(r.action_values) }));
+  }
+  const out: MonthlyRow[] = [];
+  if (channel === "naver_gfa") {
+    const campaigns: any[] = [];
+    for (let page = 0; page < 50; page++) { const items = gfaList(await gfaGet(`/adAccounts/${accountId}/campaigns`, { page: String(page), size: "100" })); campaigns.push(...items); if (items.length < 100) break; }
+    const info = new Map(campaigns.map((c) => [String(c.no), c]));
+    for (const month of months) {
+      const range = { startDate: monthBounds(month).since, endDate: monthBounds(month).until, timeUnit: "monthly" };
+      const fetchRows = (path: string) => gfaPaged(`/adAccounts/${accountId}${path}`, range).catch(() => gfaPaged(`/adAccounts/${accountId}${path}`, { ...range, timeUnit: "daily" }));
+      const [sets, setConv, camps, campConv] = await Promise.all(["/performance/past/adSets", "/performance/conversion/past/adSets", "/performance/past/campaigns", "/performance/conversion/past/campaigns"].map((p) => fetchRows(p).catch(() => [] as any[])));
+      const inSets = new Set([...sets, ...setConv].map((r) => String(r.campaignNo ?? "")));
+      const agg = new Map<string, MonthlyRow>();
+      const row = (no: string) => { if (!agg.has(no)) { const c = info.get(no); agg.set(no, { ...base, month, campaignId: no, campaignName: c?.name || `캠페인 ${no}`, product: productOf(c?.objective) || "", imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0 }); } return agg.get(no)!; };
+      const perf = (r: any) => { const x = row(String(r.campaignNo ?? "")); x.imp += num(r.impCount); x.clk += num(r.clickCount); x.cost += num(r.sales); };
+      const conv = (r: any) => { if (r.convType === "PURCHASE") { const x = row(String(r.campaignNo ?? "")); x.conv += num(r.convCount); x.revenue += num(r.convSales); } };
+      sets.forEach(perf); camps.filter((r) => !inSets.has(String(r.campaignNo ?? ""))).forEach(perf);
+      setConv.forEach(conv); campConv.filter((r) => !inSets.has(String(r.campaignNo ?? ""))).forEach(conv);
+      out.push(...[...agg.values()].filter((r) => r.imp || r.cost));
+    }
+    return out;
+  }
+  // naver_sa: 캠페인 합계를 달마다 (전환매출은 SA 통계 기준 전체 전환)
+  const campaigns = await naverRequest("GET", "/ncc/campaigns", undefined, accountId) as any[];
+  const info = new Map(campaigns.map((c) => [c.nccCampaignId, c]));
+  for (const month of months) {
+    const stats = await naverStats(accountId, campaigns.map((c) => c.nccCampaignId), monthBounds(month).since, monthBounds(month).until, false);
+    for (const s of stats) {
+      if (!num(s.impCnt) && !num(s.salesAmt)) continue;
+      const c = info.get(s.id);
+      out.push({ ...base, month, campaignId: s.id, campaignName: c?.name || s.id, product: productOf(c?.campaignTp) || "", imp: num(s.impCnt), clk: num(s.clkCnt), cost: num(s.salesAmt), conv: num(s.ccnt), revenue: num(s.convAmt) });
+    }
   }
   return out;
 }
@@ -848,6 +872,23 @@ export const PRODUCT_LABEL: Record<string, string> = {
   CONVERSION: "전환", CATALOG: "카탈로그", WEB_SITE_TRAFFIC: "웹사이트 트래픽", INSTALL_APP: "앱 설치", VIDEO_VIEW: "동영상 조회", AWARENESS: "인지도", SHOPPING_PROMOTION: "쇼핑 프로모션", ADVOOST_SHOPPING: "애드부스트 쇼핑", LEAD: "참여·잠재고객",
 };
 function productOf(value?: string) { return value ? (PRODUCT_LABEL[value] || value) : undefined; }
+
+/** 네이버 SA 비즈머니 잔액 (10분 캐시). GFA는 잔액 조회 API가 없다. */
+export async function getBizmoney(customerIds: string[]) {
+  return Promise.all(customerIds.map(async (id) => {
+    const key = `bizmoney:${id}`;
+    const cached = await cacheGet<{ bizmoney: number; budgetLock: boolean }>(key);
+    if (cached) return { customerId: id, ...cached.value, at: new Date(cached.updatedAt).toISOString() };
+    try {
+      const body = await naverRequest("GET", "/billing/bizmoney", undefined, id);
+      const value = { bizmoney: Math.round(num(body.bizmoney)), budgetLock: Boolean(body.budgetLock) };
+      await cacheSet(key, value, Date.now() + 10 * 60_000);
+      return { customerId: id, ...value, at: new Date().toISOString() };
+    } catch (error) {
+      return { customerId: id, error: error instanceof Error ? error.message : String(error) };
+    }
+  }));
+}
 
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
