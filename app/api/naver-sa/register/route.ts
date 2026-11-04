@@ -1,4 +1,5 @@
 import { verifyNaverSaCredential } from "@/lib/adapters/live";
+import { deleteNaverSa, saveNaverSaSealed, storageAvailable } from "@/lib/db";
 import { sealCredential } from "@/lib/naver-sa-registry";
 
 export const runtime = "nodejs";
@@ -20,8 +21,18 @@ export async function POST(request: Request) {
       return Response.json({ error: `네이버 SA 인증 실패: ${error instanceof Error ? error.message : String(error)}` }, { status: 400 });
     }
     const token = sealCredential({ customerId, name, apiKey, secret });
-    return Response.json({ account: { id: customerId, channel: "naver_sa", name }, token, campaignCount });
+    // Supabase가 연결돼 있으면 서버에 저장해 팀 전체가 쓰게 한다.
+    let stored = false;
+    if (storageAvailable()) { await saveNaverSaSealed(customerId, name, token); stored = true; }
+    return Response.json({ account: { id: customerId, channel: "naver_sa", name }, token, campaignCount, stored });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "등록에 실패했습니다." }, { status: 500 });
   }
+}
+
+export async function DELETE(request: Request) {
+  const customerId = (new URL(request.url).searchParams.get("customerId") || "").replace(/[^0-9]/g, "");
+  if (!customerId) return Response.json({ error: "customerId가 필요합니다." }, { status: 400 });
+  if (storageAvailable()) await deleteNaverSa(customerId);
+  return Response.json({ ok: true });
 }

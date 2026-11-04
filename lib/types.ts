@@ -87,3 +87,39 @@ export type PendingAction = {
   expiresAt: number;
   token: string;
 };
+
+export type DailyRow = {
+  date: string;
+  channel: Channel;
+  accountId: string;
+  spend: number;
+  revenue: number;
+  conversions: number;
+  impressions: number;
+  clicks: number;
+};
+
+export type ReportResult = {
+  since: string;
+  until: string;
+  rows: DailyRow[];
+  errors: Array<{ channel: Channel; accountId: string; message: string }>;
+};
+
+export type CreativeRow = {
+  id: string;
+  channel: Channel;
+  accountId: string;
+  name: string;
+  campaignName?: string;
+  groupName?: string;
+  imageUrl?: string;
+  headline?: string;
+  body?: string;
+  status?: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  revenue: number;
+};

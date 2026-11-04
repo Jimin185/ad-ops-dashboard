@@ -12,6 +12,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "latest",
     "next": "latest",
+    "postgres": "^3.4.7",
     "react": "latest",
     "react-dom": "latest"
   },
