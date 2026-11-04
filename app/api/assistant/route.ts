@@ -53,8 +53,11 @@ async function handle(request: Request) {
     const pendingActions: PendingAction[] = [];
     const mixDrafts: MediaMix[] = [];
     let finalText = "";
+    const usage = { input: 0, output: 0, cached: 0 };
 
+    // 사용자가 중지를 누르면(연결 끊김) 다음 단계로 넘어가지 않고, 진행 중인 Claude 호출도 취소한다.
     for (let iteration = 0; iteration < 8; iteration += 1) {
+      if (request.signal.aborted) return new Response(null, { status: 499 });
       const response = await anthropic.beta.messages.create({
         model: "claude-opus-5-5",
         max_tokens: 16000,
@@ -64,8 +67,9 @@ async function handle(request: Request) {
         system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
         tools: assistantTools as any,
         messages,
-      });
+      }, { signal: request.signal });
 
+      usage.input += response.usage.input_tokens; usage.output += response.usage.output_tokens; usage.cached += response.usage.cache_read_input_tokens || 0;
       messages.push({ role: "assistant", content: response.content as any });
       finalText = response.content.filter((block) => block.type === "text").map((block: any) => block.text).join("\n");
       if (response.stop_reason === "refusal") { finalText = finalText || "이 요청은 처리할 수 없습니다. 표현을 바꿔 다시 요청해 주세요."; break; }
@@ -85,8 +89,9 @@ async function handle(request: Request) {
       messages.push({ role: "user", content: toolResults });
     }
 
-    return Response.json({ message: finalText || "처리가 완료되었습니다.", pendingActions, mixDrafts });
+    return Response.json({ message: finalText || "처리가 완료되었습니다.", pendingActions, mixDrafts, usage });
   } catch (error) {
+    if (request.signal.aborted || error instanceof Anthropic.APIUserAbortError) return new Response(null, { status: 499 });
     if (error instanceof Anthropic.AuthenticationError) return Response.json({ error: "Claude API 키가 유효하지 않습니다. Vercel의 ANTHROPIC_API_KEY를 새 키로 교체해 주세요." }, { status: 503 });
     return Response.json({ error: friendlyError(error) }, { status: 500 });
   }

@@ -8,7 +8,7 @@ import { MixView } from "./mix-view";
 import { CreativeView } from "./creative-view";
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
-type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[] };
+type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
 type DashTab = "report" | "mix" | "creative" | "ops";
 const MIX_STORAGE = "adops-mixes";
 
@@ -367,6 +367,11 @@ export default function Dashboard() {
     setChatOpen(true);
   }
 
+  const abortRef = useRef<AbortController | null>(null);
+  function stopMessage() {
+    abortRef.current?.abort();
+  }
+
   async function sendMessage(preset?: string) {
     const text = (preset ?? input).trim();
     if (!text || sending) return;
@@ -374,14 +379,18 @@ export default function Dashboard() {
     setMessages(next);
     setInput("");
     setSending(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const history = next.map(({ role, content }) => ({ role, content }));
-      const response = await apiFetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, context: { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes, mixLineSummary } }) });
+      const response = await apiFetch("/api/assistant", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, context: { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes, mixLineSummary } }) });
       const data = await response.json();
-      setMessages((current) => [...current, { role: "assistant", content: response.ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts }]);
-    } catch {
-      setMessages((current) => [...current, { role: "assistant", content: "서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요." }]);
+      setMessages((current) => [...current, { role: "assistant", content: response.ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts, usage: data.usage }]);
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === "AbortError";
+      setMessages((current) => [...current, { role: "assistant", content: aborted ? "응답을 중지했어요." : "서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요." }]);
     } finally {
+      abortRef.current = null;
       setSending(false);
     }
   }
@@ -521,13 +530,14 @@ export default function Dashboard() {
         <div className="messages">
           {messages.map((message, index) => <div className={`message ${message.role}`} key={index}>
             <MarkdownLite value={message.content} />
+            {message.usage && <small className="usage-note">토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
             {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
             {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(); }} />)}
           </div>)}
-          {sending && <div className="message assistant"><span className="typing">● ● ●</span></div>}
+          {sending && <div className="message assistant"><span className="typing">● ● ●</span> <button className="link-button" onClick={stopMessage}>중지</button></div>}
         </div>
         <div className="suggestions"><button onClick={() => setInput("이번 달 채널별 성과를 믹스 목표와 비교해줘")}>믹스 대비 성과</button><button onClick={() => setInput("다음 달 미디어 믹스 초안 만들어줘")}>다음 달 믹스</button><button onClick={() => setInput("이번 달 믹스대로 남은 기간 일예산 조정안 만들어줘")}>믹스대로 예산 조정</button><button onClick={() => setInput("성과 좋은 소재 기준으로 Meta 카피 시안 3개 써줘")}>카피 시안</button></div>
-        <div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} placeholder="예: 브랜드 캠페인 일예산 5만원으로 올려줘" /><button disabled={sending || !input.trim()} onClick={() => void sendMessage()}>전송</button></div>
+        <div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} placeholder="예: 브랜드 캠페인 일예산 5만원으로 올려줘" />{sending ? <button className="stop-button" onClick={stopMessage}>■ 중지</button> : <button disabled={!input.trim()} onClick={() => void sendMessage()}>전송</button>}</div>
       </aside>}
     </main>
   );
