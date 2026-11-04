@@ -576,6 +576,241 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
   return { since, until, rows, errors, fetchedAt: new Date(oldest).toISOString() };
 }
 
+// ---- 네이버 SA 대용량 리포트 (stat-reports: 비동기 생성 → 다운로드) ----
+export async function naverStatReport(customerId: string, reportTp: string, statDt: string, waitMs = 25_000): Promise<string[][] | "pending"> {
+  const key = naverKeyFor(customerId);
+  const job = await naverSigned(key, "POST", "/stat-reports", { reportTp, statDt: statDt.replace(/-/g, "") });
+  const jobId = job?.reportJobId;
+  if (!jobId) throw new Error(`리포트 요청 실패: ${JSON.stringify(job).slice(0, 200)}`);
+  const started = Date.now();
+  while (Date.now() - started < waitMs) {
+    const status = await naverSigned(key, "GET", `/stat-reports/${jobId}`);
+    if (status?.status === "BUILT" && status.downloadUrl) {
+      const timestamp = Date.now().toString();
+      const signature = crypto.createHmac("sha256", key.secret).update(`${timestamp}.GET./report-download`).digest("base64");
+      const res = await fetch(status.downloadUrl, { headers: { "X-Timestamp": timestamp, "X-API-KEY": key.apiKey, "X-Customer": key.customerId, "X-Signature": signature }, cache: "no-store" });
+      const text = await res.text();
+      if (!text.trim() || text.trim().startsWith("{")) return [];
+      return text.trim().split("\n").map((line) => line.split("\t"));
+    }
+    if (status?.status === "NONE" || status?.status === "ERROR") return [];
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return "pending";
+}
+
+// ---- 네이버 SA 상세 분석 (키워드·소재·쇼핑 검색어·제품) ----
+// 하루치 리포트 4종을 받아 (캠페인|그룹|키워드/검색어|소재) 단위로 합쳐서 날짜별로 캐시한다.
+// 값 배열: [노출, 클릭, 비용, 구매수, 구매매출, 장바구니수]
+type SaVals = [number, number, number, number, number, number];
+type SaDay = { ad: Record<string, SaVals>; term: Record<string, SaVals> };
+const addVals = (map: Record<string, SaVals>, key: string, i: number, v: number) => { (map[key] ||= [0, 0, 0, 0, 0, 0])[i] += v; };
+
+async function saDay(customerId: string, date: string, force: boolean): Promise<SaDay | "pending"> {
+  const key = `sa-day:${customerId}:${date}`;
+  const cached = await cacheGet<SaDay & { at: string }>(key);
+  if (cached) {
+    const finalOk = isFinalDate(date) && new Date(cached.value.at).getTime() >= new Date(`${date}T00:00:00Z`).getTime() + 3 * 86400_000;
+    if (finalOk || (!force && new Date(cached.value.at).getTime() >= nextDailyRefresh() - 24 * 3600_000)) return cached.value;
+  }
+  const [ad, adConv, term, termConv] = await Promise.all(["AD", "AD_CONVERSION", "SHOPPINGKEYWORD_DETAIL", "SHOPPINGKEYWORD_CONVERSION_DETAIL"].map((tp) => naverStatReport(customerId, tp, date, 35_000)));
+  if ([ad, adConv, term, termConv].some((r) => r === "pending")) return "pending";
+  const day: SaDay = { ad: {}, term: {} };
+  for (const r of ad as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; addVals(day.ad, k, 0, num(r[9])); addVals(day.ad, k, 1, num(r[10])); addVals(day.ad, k, 2, num(r[11])); }
+  for (const r of adConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[10] === "purchase") { addVals(day.ad, k, 3, num(r[11])); addVals(day.ad, k, 4, num(r[12])); } else if (r[10] === "add_to_cart") addVals(day.ad, k, 5, num(r[11])); }
+  for (const r of term as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; addVals(day.term, k, 0, num(r[11])); addVals(day.term, k, 1, num(r[12])); addVals(day.term, k, 2, num(r[13])); }
+  for (const r of termConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[12] === "purchase") { addVals(day.term, k, 3, num(r[13])); addVals(day.term, k, 4, num(r[14])); } else if (r[12] === "add_to_cart") addVals(day.term, k, 5, num(r[13])); }
+  await cacheSet(key, { ...day, at: new Date().toISOString() }, isFinalDate(date) ? null : nextDailyRefresh() + 7 * 86400_000);
+  return day;
+}
+
+async function saNames(customerId: string, path: "adgroups" | "keywords" | "ads", ids: string[]) {
+  const key = `sa-names:${customerId}:${path}`;
+  const known = (await cacheGet<Record<string, any>>(key))?.value || {};
+  const missing = ids.filter((id) => id && id !== "-" && !(id in known));
+  for (let i = 0; i < missing.length; i += 20) {
+    const chunk = missing.slice(i, i + 20);
+    try {
+      const rows = await naverRequest("GET", `/ncc/${path}?ids=${chunk.join(",")}`, undefined, customerId) as any[];
+      for (const row of rows || []) {
+        if (path === "adgroups") known[row.nccAdgroupId] = { name: row.name, active: !row.userLock && row.status !== "PAUSED" };
+        else if (path === "keywords") known[row.nccKeywordId] = { name: row.keyword, active: !row.userLock };
+        else {
+          const ref = row.referenceData || {};
+          known[row.nccAdId] = { type: row.type, headline: row.ad?.headline, description: row.ad?.description, product: ref.productName || ref.productTitle, image: ref.imageUrl, price: num(ref.lowPrice || ref.mobilePrice), category: ref.fullMallCatNm, active: !row.userLock && row.status !== "PAUSED" };
+        }
+      }
+      for (const id of chunk) if (!(id in known)) known[id] = null;
+    } catch { break; }
+  }
+  if (missing.length) await cacheSet(key, known, nextDailyRefresh() + 6 * 86400_000);
+  return known;
+}
+
+export type SaRow = { imp: number; clk: number; cost: number; conv: number; revenue: number; cart: number };
+const toRow = (v: SaVals): SaRow => ({ imp: v[0], clk: v[1], cost: v[2], conv: v[3], revenue: v[4], cart: v[5] });
+
+/** 기간의 SA 상세 분석. 시간이 걸리는 날짜가 남으면 status: "loading"으로 진행률만 돌려주고, 다시 부르면 이어서 받는다. */
+export async function getSaInsights(customerId: string, since: string, until: string, force = false) {
+  const dates = eachDate(since, until);
+  const started = Date.now();
+  const days: SaDay[] = [];
+  let pending = 0;
+  for (let i = 0; i < dates.length; i += 3) {
+    if (Date.now() - started > 40_000) { pending += dates.length - i; break; }
+    const batch = await Promise.all(dates.slice(i, i + 3).map((d) => saDay(customerId, d, force).catch(() => "pending" as const)));
+    for (const d of batch) if (d === "pending") pending++; else days.push(d);
+  }
+  if (pending) return { status: "loading" as const, ready: dates.length - pending, total: dates.length };
+
+  const ad: Record<string, SaVals> = {}, term: Record<string, SaVals> = {};
+  for (const d of days) {
+    for (const [k, v] of Object.entries(d.ad)) v.forEach((x, i) => addVals(ad, k, i, x));
+    for (const [k, v] of Object.entries(d.term)) v.forEach((x, i) => addVals(term, k, i, x));
+  }
+  const campaigns = (await naverRequest("GET", "/ncc/campaigns", undefined, customerId)) as any[];
+  const campaignInfo = Object.fromEntries(campaigns.map((c) => [c.nccCampaignId, { name: c.name, type: c.campaignTp }]));
+  const sum = (entries: Array<[string, SaVals]>, keyOf: (parts: string[]) => string) => {
+    const out: Record<string, SaVals> = {};
+    for (const [k, v] of entries) { const g = keyOf(k.split("|")); v.forEach((x, i) => addVals(out, g, i, x)); }
+    return out;
+  };
+  const adEntries = Object.entries(ad);
+  const byGroup = sum(adEntries, (p) => `${p[0]}|${p[1]}`);
+  const byKeyword = sum(adEntries.filter(([k]) => k.split("|")[2] !== "-"), (p) => `${p[0]}|${p[1]}|${p[2]}`);
+  const byAd = sum(adEntries, (p) => `${p[0]}|${p[1]}|${p[3]}`);
+  const byTerm = sum(Object.entries(term), (p) => `${p[0]}|${p[1]}|${p[2]}`);
+  const top = (m: Record<string, SaVals>, n: number) => Object.entries(m).sort((a, b) => b[1][2] - a[1][2] || b[1][0] - a[1][0]).slice(0, n);
+
+  const groupsTop = top(byGroup, 400), keywordsTop = top(byKeyword, 600), adsTop = top(byAd, 600);
+  const [groupNames, keywordNames, adInfo] = await Promise.all([
+    saNames(customerId, "adgroups", groupsTop.map(([k]) => k.split("|")[1])),
+    saNames(customerId, "keywords", keywordsTop.slice(0, 300).map(([k]) => k.split("|")[2])),
+    saNames(customerId, "ads", adsTop.filter(([k]) => /SHOPPING|WEB_SITE/.test(campaignInfo[k.split("|")[0]]?.type || "")).slice(0, 300).map(([k]) => k.split("|")[2])),
+  ]);
+  const base = (cmp: string, grp: string) => ({ campaignId: cmp, campaign: campaignInfo[cmp]?.name || cmp, type: campaignInfo[cmp]?.type || "", adgroupId: grp, adgroup: groupNames[grp]?.name || grp });
+
+  const adRows = adsTop.map(([k, v]) => { const [cmp, grp, id] = k.split("|"); return { ...base(cmp, grp), id, info: adInfo[id] || null, ...toRow(v) }; });
+  // 제품 = 쇼핑검색 캠페인의 소재(상품). 같은 상품이 여러 그룹에 있으면 합친다.
+  const products: Record<string, any> = {};
+  for (const r of adRows.filter((r) => r.type === "SHOPPING" && r.info?.product)) {
+    const p = (products[r.info.product] ||= { name: r.info.product, image: r.info.image, price: r.info.price, category: r.info.category, groups: new Set<string>(), imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0, cart: 0 });
+    p.groups.add(r.adgroup); for (const f of ["imp", "clk", "cost", "conv", "revenue", "cart"] as const) p[f] += r[f];
+  }
+  const typeTotals: Record<string, SaVals> = {};
+  for (const [k, v] of adEntries) { const t = campaignInfo[k.split("|")[0]]?.type || "기타"; v.forEach((x, i) => addVals(typeTotals, t, i, x)); }
+
+  return {
+    status: "ready" as const, since, until,
+    typeTotals: Object.entries(typeTotals).map(([type, v]) => ({ type, ...toRow(v) })),
+    adgroups: groupsTop.map(([k, v]) => { const [cmp, grp] = k.split("|"); return { ...base(cmp, grp), active: groupNames[grp]?.active ?? true, ...toRow(v) }; }),
+    keywords: keywordsTop.map(([k, v]) => { const [cmp, grp, kw] = k.split("|"); return { ...base(cmp, grp), id: kw, keyword: keywordNames[kw]?.name || "(이름 미조회)", active: keywordNames[kw]?.active ?? true, ...toRow(v) }; }),
+    powerlinkAds: adRows.filter((r) => r.type === "WEB_SITE" && r.id !== "-").map((r) => ({ ...r, headline: r.info?.headline, description: r.info?.description, active: r.info?.active ?? true, info: undefined })),
+    searchTerms: top(byTerm, 800).map(([k, v]) => { const [cmp, grp, t] = k.split("|"); return { ...base(cmp, grp), term: t, ...toRow(v) }; }),
+    products: Object.values(products).map((p) => ({ ...p, groups: [...p.groups] })).sort((a, b) => b.cost - a.cost),
+  };
+}
+
+// ---- 범용 매체 API (AI 세팅용) ----
+// 조회는 바로, 변경은 사용자 승인 후 실행된다. 모든 요청은 선택한 광고주에 매핑된 계정 안에서만 허용한다.
+export type MediaMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type MediaStep = { channel: Channel; accountId: string; method: MediaMethod; path: string; body?: unknown; note?: string };
+
+const metaObjectId = (path: string) => path.replace(/^\/+/, "").split(/[/?]/)[0];
+
+/** 요청이 해당 계정 범위 안인지 확인. 범위 밖이면 이유를 담아 예외. */
+export async function assertMediaScope(step: MediaStep, allowedKeys: string[]) {
+  const account = cleanId(step.accountId);
+  if (!allowedKeys.includes(`${step.channel}:${account}`)) throw new Error(`${step.channel}:${account} 계정은 이 광고주에 매핑돼 있지 않습니다.`);
+  const path = step.path.replace(/^\/+/, "");
+  if (step.channel === "google_ads" && !path.startsWith(`customers/${account}`)) throw new Error(`Google Ads 경로는 customers/${account}/... 로 시작해야 합니다.`);
+  if (step.channel === "naver_gfa" && !path.startsWith(`adAccounts/${account}`)) throw new Error(`GFA 경로는 /adAccounts/${account}/... 로 시작해야 합니다.`);
+  if (step.channel === "meta") {
+    const id = metaObjectId(path);
+    if (id.startsWith("act_")) { if (id !== `act_${account}`) throw new Error(`다른 Meta 광고계정(${id})입니다.`); }
+    else if (step.method !== "GET" && /^\d+$/.test(id)) {
+      // 캠페인·광고세트·광고·크리에이티브 ID면 소속 광고계정을 확인
+      const owner = await metaGet(id, { fields: "account_id" }).catch(() => null);
+      if (owner?.account_id && String(owner.account_id).replace(/^act_/, "") !== account) throw new Error(`대상 ${id}는 다른 Meta 광고계정 소속입니다.`);
+    }
+  }
+}
+
+async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
+  const config = gfaConfig();
+  if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
+  const url = `${GFA_BASE}/${path.replace(/^\/+/, "")}`;
+  const call = async (token: string) => fetch(url, { method, headers: { Authorization: `Bearer ${token}`, AccessManagerAccountNo: config.manager, "Content-Type": "application/json" }, body: body === undefined || method === "GET" ? undefined : JSON.stringify(body), cache: "no-store" });
+  let response = await call(await gfaToken());
+  if (response.status === 401) response = await call(await gfaToken(true));
+  const text = await response.text();
+  let parsed: any; try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { message: text }; }
+  if (!response.ok) throw new Error(`${[parsed?.message, parsed?.error?.message, parsed?.title].find((v) => typeof v === "string") || JSON.stringify(parsed).slice(0, 400)} (HTTP ${response.status})`);
+  return parsed;
+}
+
+async function googleRaw(method: MediaMethod, path: string, body?: unknown) {
+  const developerToken = env("GOOGLE_ADS_DEVELOPER_TOKEN"), loginId = env("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
+  if (!developerToken || !loginId) throw new Error("Google Ads MCC 인증정보가 없습니다.");
+  return jsonFetch(`https://googleads.googleapis.com/${GOOGLE_VERSION}/${path.replace(/^\/+/, "")}`, {
+    method, headers: { Authorization: `Bearer ${await googleToken()}`, "developer-token": developerToken, "login-customer-id": cleanId(loginId), "Content-Type": "application/json" },
+    body: body === undefined || method === "GET" ? undefined : JSON.stringify(body),
+  });
+}
+
+async function metaRaw(method: MediaMethod, path: string, body?: unknown) {
+  const token = metaToken();
+  if (!token) throw new Error("Meta 액세스 토큰이 없습니다.");
+  const clean = path.replace(/^\/+/, "");
+  if (method === "GET") {
+    const [p, q] = clean.split("?");
+    const params = new URLSearchParams(q || "");
+    if (body && typeof body === "object") for (const [k, v] of Object.entries(body as any)) params.set(k, typeof v === "string" ? v : JSON.stringify(v));
+    params.set("access_token", token);
+    return jsonFetch(`https://graph.facebook.com/${META_VERSION}/${p}?${params}`);
+  }
+  // Graph API 쓰기는 form 필드. 객체/배열 값은 JSON 문자열로 보낸다 (targeting, creative 등).
+  const fields = new URLSearchParams({ access_token: token });
+  if (body && typeof body === "object") for (const [k, v] of Object.entries(body as any)) fields.set(k, typeof v === "string" ? v : JSON.stringify(v));
+  return jsonFetch(`https://graph.facebook.com/${META_VERSION}/${clean}${method === "DELETE" ? `?access_token=${token}` : ""}`, method === "DELETE" ? { method: "DELETE" } : { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: fields });
+}
+
+export async function executeMediaStep(step: MediaStep) {
+  const path = step.path.startsWith("/") ? step.path : `/${step.path}`;
+  if (step.channel === "naver_sa") return naverRequest(step.method, path, step.method === "GET" ? undefined : step.body, cleanId(step.accountId));
+  if (step.channel === "naver_gfa") return gfaRequest(step.method, path, step.body);
+  if (step.channel === "google_ads") return googleRaw(step.method, path, step.body);
+  return metaRaw(step.method, path, step.body);
+}
+
+/** "{{0.id}}" 처럼 앞 단계 결과를 참조하는 값을 채운다. */
+function fillRefs(value: unknown, results: unknown[]): unknown {
+  if (typeof value === "string") return value.replace(/\{\{(\d+)\.([\w.\[\]]+)\}\}/g, (_, i, field) => {
+    let cur: any = results[Number(i)];
+    for (const part of field.replace(/\[(\d+)\]/g, ".$1").split(".")) cur = cur?.[part];
+    if (cur === undefined || cur === null) throw new Error(`앞 단계 결과에서 {{${i}.${field}}} 값을 찾지 못했습니다.`);
+    return String(cur);
+  });
+  if (Array.isArray(value)) return value.map((v) => fillRefs(v, results));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillRefs(v, results)]));
+  return value;
+}
+
+/** 승인된 단계들을 순서대로 실행. 실패하면 거기서 멈추고 지금까지 결과를 돌려준다. */
+export async function executeMediaPlan(steps: MediaStep[], allowedKeys: string[]) {
+  const results: unknown[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    try {
+      const step = fillRefs(steps[i], results) as MediaStep;
+      await assertMediaScope(step, allowedKeys);
+      results.push(await executeMediaStep(step));
+    } catch (error) {
+      return { success: false, completed: i, failedStep: i, error: error instanceof Error ? error.message : String(error), results };
+    }
+  }
+  return { success: true, completed: steps.length, results };
+}
+
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
 export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
@@ -682,6 +917,7 @@ export const liveAdapter = {
     return null;
   },
   async apply(operation: ChangeOperation) {
+    if (operation.kind === "media_plan") return executeMediaPlan(operation.steps as MediaStep[], operation.accountKeys);
     if (operation.channel === "naver_gfa") throw new Error("네이버 GFA 변경 API 규격 확인 전에는 변경할 수 없습니다.");
     if (operation.kind === "create_text_ad") throw new Error("네이버 SA 소재 생성은 트래킹 템플릿 검증 후 지원됩니다.");
     const key = unpack(operation.id);

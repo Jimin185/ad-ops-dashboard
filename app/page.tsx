@@ -6,10 +6,11 @@ import { matchMix, mixTotalBudget } from "@/lib/mix";
 import { ReportView } from "./report-view";
 import { MixView } from "./mix-view";
 import { CreativeView } from "./creative-view";
+import { SaView } from "./sa-view";
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
-type DashTab = "report" | "mix" | "creative" | "ops";
+type DashTab = "report" | "mix" | "creative" | "sa" | "ops";
 const MIX_STORAGE = "adops-mixes";
 
 type RegisteredNaverSa = { id: string; name: string; token: string };
@@ -67,13 +68,21 @@ function ConfirmCard({ action, onDone }: { action: PendingAction; onDone: (messa
       return;
     }
     setState("done");
-    onDone(data.message);
+    // 매체 세팅 결과(생성된 ID 등)를 대화에 남겨서 AI가 다음 작업에 이어 쓸 수 있게 한다
+    const results = data.result?.results;
+    const detail = Array.isArray(results) && results.length ? `\n실행 결과: ${JSON.stringify(results).slice(0, 1500)}` : "";
+    onDone(`${data.message}${detail}`);
   }
 
   return (
     <div className="confirm-card">
       <strong>{action.title}</strong>
-      {action.items.map((item) => (
+      {action.operation.kind === "media_plan" ? <ol className="plan-steps">{action.items.map((item) => (
+        <li key={item.targetId} className={String(item.field).startsWith("DELETE") ? "danger" : ""}>
+          <b>{item.targetName.replace(/^\d+\.\s*/, "")}</b>
+          <code>{item.field} {String(item.before)}</code>
+          {item.after ? <details><summary>요청 내용</summary><pre>{String(item.after)}</pre></details> : null}
+        </li>))}</ol> : action.items.map((item) => (
         <div className="change-row" key={`${item.targetId}-${item.field}`}>
           <span>{item.targetName}</span>
           <span>{item.field}: <del>{String(item.before ?? "없음")}</del> → <b>{String(item.after)}</b></span>
@@ -81,7 +90,7 @@ function ConfirmCard({ action, onDone }: { action: PendingAction; onDone: (messa
       ))}
       <div className="confirm-actions">
         <button className="secondary" disabled={state !== "idle"} onClick={() => setState("cancelled")}>{state === "cancelled" ? "취소됨" : "취소"}</button>
-        <button className="primary" disabled={state !== "idle"} onClick={apply}>{state === "loading" ? "적용 중…" : state === "done" ? "적용 완료" : "적용"}</button>
+        <button className="primary" disabled={state !== "idle"} onClick={apply}>{state === "loading" ? "실행 중…" : state === "done" ? "실행 완료" : action.operation.kind === "media_plan" ? `${action.items.length}단계 실행` : "적용"}</button>
       </div>
     </div>
   );
@@ -467,7 +476,7 @@ export default function Dashboard() {
       </header>
 
       <nav className="view-tabs" aria-label="화면 전환">
-        {([["report", "리포트"], ["mix", "미디어 믹스"], ["creative", "소재 성과"], ["ops", "운영 설정"]] as Array<[DashTab, string]>).map(([key, label]) => <button key={key} className={dashTab === key ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
+        {([["report", "리포트"], ["mix", "미디어 믹스"], ["creative", "소재 성과"], ["sa", "SA 분석"], ["ops", "운영 설정"]] as Array<[DashTab, string]>).filter(([key]) => key !== "sa" || selectedAdvertiser?.accountKeys.some((k) => k.startsWith("naver_sa:"))).map(([key, label]) => <button key={key} className={dashTab === key ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
         <span className={`storage-badge ${storageMode}`} title={storageError || undefined}>{storageMode === "supabase" ? "Supabase 저장" : storageMode === "local" ? "이 브라우저에만 저장" : "…"}</span>
       </nav>
       {storageError && <div className="connection-error"><b>저장소 오류</b><span>{storageError}</span></div>}
@@ -475,6 +484,7 @@ export default function Dashboard() {
 
       {dashTab === "report" && <ReportView accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
       {dashTab === "mix" && selectedAdvertiser && <MixView campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
+      {dashTab === "sa" && <SaView apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
       {dashTab === "creative" && <CreativeView accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} />}
       {dashTab === "ops" && <>
       <section className="metrics">

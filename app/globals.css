@@ -225,3 +225,20 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .usage-note { display:block; margin-top:6px; font-size:10px; color:var(--muted); }
 .fetched-at { color:var(--muted); font-size:12px; margin-right:8px; }
 .report-range .link-button { margin-left:8px; }
+
+.sub-tabs { margin:4px 0 0; }
+.loading-card { display:grid; gap:8px; }
+.table-card { padding:0; overflow:hidden; }
+.sa-table { min-width:1100px; } .sa-table td small { color:var(--muted); }
+.sa-table tbody tr { cursor:default; }
+.ad-copy b, .ad-copy small { display:block; max-width:360px; }
+.ad-copy small { color:var(--muted); margin-top:3px; }
+.product-cell { display:flex; gap:10px; align-items:center; min-width:280px; }
+.product-cell img, .product-cell .no-img { width:48px; height:48px; border-radius:8px; object-fit:cover; background:#f1f2ef; flex:none; }
+.group-select { max-width:280px; }
+
+.plan-steps { margin:8px 0; padding-left:18px; display:grid; gap:8px; font-size:12px; }
+.plan-steps li b { display:block; }
+.plan-steps code { display:block; font-size:11px; color:var(--muted); word-break:break-all; }
+.plan-steps li.danger b, .plan-steps li.danger code { color:var(--critical); }
+.plan-steps pre { white-space:pre-wrap; word-break:break-all; font-size:11px; background:#f6f7f5; padding:6px; border-radius:6px; max-height:160px; overflow:auto; margin:4px 0 0; }
