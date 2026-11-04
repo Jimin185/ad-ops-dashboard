@@ -13,7 +13,7 @@ export async function POST(request: Request) {
       const body = (await request.json()) as { accounts?: string[]; ensure?: boolean };
       const accounts = (body.accounts || []).map(String).slice(0, 300);
       if (body.ensure !== false && accounts.length) {
-        const result = await ensureMonthly(accounts, 40_000);
+        const result = await ensureMonthly(accounts, 25_000);
         if (result.pending) return Response.json({ status: "loading", ...result });
         if (result.errors?.length) return Response.json({ status: "ready", errors: result.errors, rows: await queryMonthly(accounts) });
       }
