@@ -7,7 +7,7 @@ import type { Channel, ChangeOperation, EntityType, PendingAction } from "@/lib/
 export const assistantTools = [
   {
     name: "list_campaigns",
-    description: "현재 선택한 광고주에 매핑된 계정의 캠페인 목록(이름, ID, 일예산, 상태, 이번 달 광고비·전환·ROAS)을 광고비 순으로 조회합니다.",
+    description: "현재 선택한 광고주에 매핑된 계정의 운영 중인 캠페인 목록(이름, ID, 일예산, 상태, 이번 달 광고비·전환·ROAS)을 광고비 순으로 조회합니다. 꺼짐·종료 캠페인까지 필요하면 includeOff=true.",
     strict: true,
     input_schema: {
       type: "object",
@@ -182,7 +182,8 @@ export async function executeAssistantTool(name: string, input: ToolInput, ctx: 
     return { result: { status: "pending_user_confirmation", month: mixDraft.month, totalBudget: Object.values(mixDraft.channels).reduce((s, c) => s + (c?.budget || 0), 0) }, mixDraft };
   }
   if (name === "list_campaigns") {
-    const rows = (await adapter.listCampaigns(input.channel as Channel | undefined, Boolean(input.includeOff))).filter((row) => inScope(ctx, row));
+    const rows = (await adapter.listCampaigns(input.channel as Channel | undefined, Boolean(input.includeOff)))
+      .filter((row) => inScope(ctx, row) && (input.includeOff || (row.active ?? row.status === "on")));
     // 모델 컨텍스트를 아끼기 위해 필요한 필드만, 광고비 순 상위 150개
     const slim = rows.sort((a, b) => b.spend - a.spend).slice(0, 150).map((row) => ({ id: row.id, channel: row.channel, account: row.accountName, name: row.name, dailyBudget: row.dailyBudget, status: row.status, spend: Math.round(row.spend), conversions: row.conversions, roas: row.roas }));
     return { result: { total: rows.length, shown: slim.length, campaigns: slim } };

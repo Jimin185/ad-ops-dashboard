@@ -191,3 +191,10 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .stale-box > div { display:flex; flex-wrap:wrap; gap:8px; }
 .stale-chip { display:inline-flex; align-items:center; gap:8px; padding:6px 6px 6px 8px; background:#fff; border:1px solid #f0d49a; border-radius:10px; }
 .stale-chip button { border:1px solid #e3c27a; background:#fff; border-radius:8px; padding:4px 8px; font-size:12px; font-weight:700; color:#6b4a00; }
+
+.campaign-filter { display:flex; gap:12px; align-items:center; padding:14px 24px; border-bottom:1px solid var(--line); }
+.campaign-filter .account-search { flex:1; }
+.toggle { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); white-space:nowrap; cursor:pointer; }
+.entity-toggle { padding:4px 0 10px; }
+.inactive-row { opacity:.5; }
+@media (max-width: 560px) { .campaign-filter { flex-direction:column; align-items:stretch; padding:12px 16px; } }

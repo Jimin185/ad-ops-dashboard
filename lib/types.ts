@@ -26,6 +26,10 @@ export type Campaign = {
   roas: number;
   accountId?: string;
   accountName?: string;
+  /** 실제로 돌아가는 중인지 (OFF·종료·완료·일시정지는 false) */
+  active?: boolean;
+  /** 매체 원본 상태값 (예: ACTIVE, PAUSED, ENDED, RUNNABLE) */
+  rawStatus?: string;
 };
 
 export type AdGroup = {
@@ -35,6 +39,7 @@ export type AdGroup = {
   name: string;
   dailyBudget: number;
   status: EntityStatus;
+  active?: boolean;
 };
 
 export type Ad = {

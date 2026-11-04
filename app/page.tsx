@@ -100,6 +100,8 @@ function MixDraftCard({ mix, onApply }: { mix: MediaMix; onApply: (mix: MediaMix
   );
 }
 
+const isRunning = (row: { active?: boolean; status: string }) => row.active ?? row.status === "on";
+
 export default function Dashboard() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [mode, setMode] = useState("mock");
@@ -112,6 +114,9 @@ export default function Dashboard() {
   const [selectedAdvertiserId, setSelectedAdvertiserId] = useState("");
   const [view, setView] = useState<"select" | "mapping" | "dashboard">("select");
   const [selectedChannel, setSelectedChannel] = useState<Channel | "all">("all");
+  const [campaignQuery, setCampaignQuery] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
+  const [showInactiveGroups, setShowInactiveGroups] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null);
   const [adgroups, setAdgroups] = useState<AdGroup[]>([]);
   const [adsByGroup, setAdsByGroup] = useState<Record<string, Ad[]>>({});
@@ -244,13 +249,21 @@ export default function Dashboard() {
     return mapped && (selectedChannel === "all" || campaign.channel === selectedChannel);
   });
 
+  // 돌아가는 캠페인만 기본 표시. 검색하면 꺼진/종료된 것도 함께 보여준다.
+  const query = campaignQuery.trim().toLowerCase();
+  const runningCount = scopedCampaigns.filter(isRunning).length;
+  const hiddenCount = scopedCampaigns.length - runningCount;
+  const visibleCampaigns = scopedCampaigns
+    .filter((campaign) => query ? `${campaign.name} ${campaign.accountName || ""}`.toLowerCase().includes(query) : showInactive || isRunning(campaign))
+    .sort((a, b) => Number(isRunning(b)) - Number(isRunning(a)) || b.spend - a.spend);
+
   // 매핑되지 않아 표에서 빠진 캠페인 수 (빈 화면일 때 원인 안내용)
   const unmappedCount = campaigns.filter((campaign) => selectedChannel === "all" || campaign.channel === selectedChannel).length - scopedCampaigns.length;
 
   const totals = useMemo(() => ({
     spend: scopedCampaigns.reduce((sum, row) => sum + row.spend, 0),
     conversions: scopedCampaigns.reduce((sum, row) => sum + row.conversions, 0),
-    active: scopedCampaigns.filter((row) => row.status === "on").length,
+    active: scopedCampaigns.filter(isRunning).length,
   }), [scopedCampaigns]);
 
   // 계정 → 이미 매핑된 광고주 이름
@@ -456,16 +469,20 @@ export default function Dashboard() {
         <nav className="channel-tabs"><button className={selectedChannel === "all" ? "active" : ""} onClick={() => setSelectedChannel("all")}>전체</button>{(Object.keys(channelLabel) as Channel[]).map((channel) => <button key={channel} className={selectedChannel === channel ? "active" : ""} onClick={() => setSelectedChannel(channel)}>{channelLabel[channel]}</button>)}</nav>
   
         <section className="panel">
-          <div className="panel-head"><div><h2>캠페인</h2><p>예산과 상태를 직접 수정하거나 AI에게 요청할 수 있습니다.</p></div><button className="secondary" onClick={refresh}>새로고침</button></div>
+          <div className="panel-head"><div><h2>캠페인</h2><p>운영 중인 캠페인 {runningCount.toLocaleString()}개{hiddenCount ? ` · 꺼짐/종료 ${hiddenCount.toLocaleString()}개 숨김` : ""}. 검색하면 숨긴 캠페인도 찾을 수 있어요.</p></div><button className="secondary" onClick={refresh}>새로고침</button></div>
+          <div className="campaign-filter">
+            <input className="account-search" type="search" placeholder="캠페인·계정 이름으로 검색 (꺼진/종료 캠페인 포함)" value={campaignQuery} onChange={(e) => setCampaignQuery(e.target.value)} />
+            <label className="toggle"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> 꺼짐/종료 포함</label>
+          </div>
           {loadError && <div className="connection-error"><b>실계정 연결 오류</b><span>{loadError}</span><small>Vercel 환경변수의 계정 ID, 토큰 및 권한을 확인해 주세요.</small></div>}
           <div className="table-wrap">
             <table className="campaign-table">
               <thead><tr><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
               <tbody>
-                {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && scopedCampaigns.length === 0 ? <tr><td colSpan={6}>{unmappedCount > 0
+                {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && visibleCampaigns.length === 0 ? <tr><td colSpan={6}>{scopedCampaigns.length ? (query ? "검색 결과가 없습니다." : `운영 중인 캠페인이 없습니다. 꺼짐/종료 ${hiddenCount}개는 '꺼짐/종료 포함'을 켜면 보여요.`) : unmappedCount > 0
                   ? <>{selectedChannel === "all" ? "" : `${channelLabel[selectedChannel]} `}캠페인 {unmappedCount.toLocaleString()}개가 있지만 이 광고주에 매핑된 계정이 없습니다. <button className="secondary" onClick={() => setView("mapping")}>계정 매핑하기</button></>
-                  : "이 광고주에 매핑된 캠페인이 없습니다."}</td></tr> : scopedCampaigns.map((campaign) => (
-                  <tr key={campaign.id} onClick={() => void openCampaign(campaign)}>
+                  : "이 광고주에 매핑된 캠페인이 없습니다."}</td></tr> : visibleCampaigns.map((campaign) => (
+                  <tr key={campaign.id} className={isRunning(campaign) ? "" : "inactive-row"} onClick={() => void openCampaign(campaign)}>
                     <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
                     <td><b>{campaign.name}</b><small className="id">{campaign.accountName} · {campaign.id}</small></td>
                     <td><button className="value-button" onClick={() => {
@@ -481,7 +498,7 @@ export default function Dashboard() {
           </div>
         </section>
   
-        {selectedCampaign && <section className="panel detail-panel"><div className="panel-head"><div><h2>{selectedCampaign.name}</h2><p>광고그룹/광고세트를 선택하면 소재를 조회합니다.</p></div><button className="secondary" onClick={() => setSelectedCampaign(null)}>닫기</button></div>{detailError && <div className="connection-error">{detailError}</div>}<div className="entity-list">{adgroups.map((group) => <div className="entity-group" key={group.id}><button onClick={() => void loadAds(group)}><b>{group.name}</b><span>{won.format(group.dailyBudget)} · {group.status.toUpperCase()}</span></button>{adsByGroup[group.id]?.map((ad) => <div className="ad-row" key={ad.id}><span>소재</span><b>{ad.name}</b><em>{ad.status.toUpperCase()}</em></div>)}</div>)}</div></section>}
+        {selectedCampaign && <section className="panel detail-panel"><div className="panel-head"><div><h2>{selectedCampaign.name}</h2><p>광고그룹/광고세트를 선택하면 소재를 조회합니다.</p></div><button className="secondary" onClick={() => setSelectedCampaign(null)}>닫기</button></div>{detailError && <div className="connection-error">{detailError}</div>}<div className="entity-list">{adgroups.some((group) => !isRunning(group)) && <label className="toggle entity-toggle"><input type="checkbox" checked={showInactiveGroups} onChange={(e) => setShowInactiveGroups(e.target.checked)} /> 꺼짐/종료 광고그룹 {adgroups.filter((group) => !isRunning(group)).length}개 보기</label>}{adgroups.filter((group) => showInactiveGroups || isRunning(group)).map((group) => <div className={`entity-group ${isRunning(group) ? "" : "inactive-row"}`} key={group.id}><button onClick={() => void loadAds(group)}><b>{group.name}</b><span>{won.format(group.dailyBudget)} · {group.status.toUpperCase()}</span></button>{adsByGroup[group.id]?.map((ad) => <div className="ad-row" key={ad.id}><span>소재</span><b>{ad.name}</b><em>{ad.status.toUpperCase()}</em></div>)}</div>)}</div></section>}
       </>}
 
       <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="AI 어시스턴트 열기">✦</button>
