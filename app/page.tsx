@@ -12,7 +12,8 @@ import { InsightsView } from "./insights-view";
 import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from "./filter-bar";
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
-type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
+type Attachment = { name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string };
+type ChatMessage = { role: "user" | "assistant"; content: string; attachments?: string[]; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
 type DashTab = "report" | "mix" | "ops" | "detail";
 const MIX_STORAGE = "adops-mixes";
 
@@ -113,6 +114,18 @@ function MixDraftCard({ mix, onApply }: { mix: MediaMix; onApply: (mix: MediaMix
 }
 
 const isRunning = (row: { active?: boolean; status: string }) => row.active ?? row.status === "on";
+
+/** ON/OFF 토글: 팝업으로 한 번 확인하고 바로 적용 */
+function StatusButton({ status, label, disabled, onToggle }: { status: string; label: string; disabled?: boolean; onToggle: (next: "on" | "off") => void }) {
+  const next = status === "on" ? "off" : "on";
+  return <button className={`status ${status}`} disabled={disabled} title={disabled ? "이 매체는 화면에서 바로 바꿀 수 없어요 (AI 어시스턴트로 요청)" : undefined}
+    onClick={(e) => { e.stopPropagation(); if (window.confirm(`'${label}'을(를) ${next.toUpperCase()} 하시겠습니까?`)) onToggle(next); }}>{status.toUpperCase()}</button>;
+}
+/** 일예산: 입력 후 확인하면 바로 적용 */
+function BudgetButton({ value, disabled, onSave }: { value: number; disabled?: boolean; onSave: (value: number) => void }) {
+  return <button className="value-button" disabled={disabled} title={disabled ? "이 매체는 화면에서 예산을 바로 바꿀 수 없어요" : "일예산 변경"}
+    onClick={(e) => { e.stopPropagation(); const v = Number((window.prompt("변경할 일예산(원)을 입력하세요.", String(Math.round(value))) || "").replace(/[^0-9]/g, "")); if (v > 0 && v !== Math.round(value) && window.confirm(`일예산을 ${won.format(v)}으로 바꾸시겠습니까?`)) onSave(v); }}>{won.format(value)}</button>;
+}
 
 export default function Dashboard() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -300,10 +313,10 @@ export default function Dashboard() {
   // 네이버 SA 비즈머니 잔액
   const saIds = (selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => k.slice(9));
   useEffect(() => {
-    if (dashTab !== "ops" || !saIds.length) return; // 매체별 데이터 화면에서만
+    if (view !== "dashboard" || !saIds.length) return; // 대시보드 모든 탭 상단 알림
     void apiFetch(`/api/bizmoney?ids=${saIds.join(",")}`).then((r) => r.json()).then((d) => setBalances(d.balances || []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dashTab, saIds.join(",")]);
+  }, [view, selectedAdvertiserId, saIds.join(",")]);
   const hasGfa = (selectedAdvertiser?.accountKeys || []).some((k) => k.startsWith("naver_gfa:"));
   const hasSa = saIds.length > 0;
   const saDaily = (id: string) => advertiserCampaigns.filter((c) => c.channel === "naver_sa" && c.accountId === id).reduce((s, c) => s + c.spend, 0) / Math.max(1, Number(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", day: "2-digit" }).format(new Date())));
@@ -317,7 +330,7 @@ export default function Dashboard() {
     setCampaignQuery(campaign.name);
     if (!isRunning(campaign)) setShowInactive(true);
     void openCampaign(campaign);
-    setTimeout(() => document.getElementById("campaign-detail")?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
+    setTimeout(() => document.getElementById(`row-${campaign.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 400);
   }
 
   // 돌아가는 캠페인만 기본 표시. 검색하면 꺼진/종료된 것도 함께 보여준다.
@@ -424,15 +437,92 @@ export default function Dashboard() {
     setChatOpen(true);
   }
 
+  // ---- 화면에서 직접 하는 ON/OFF·예산 변경 (AI 거치지 않음) ----
+  type Selected = { id: string; channel: Channel; entityType: "campaign" | "adgroup" | "ad"; name: string };
+  const [selection, setSelection] = useState<Map<string, Selected>>(new Map());
+  const [applying, setApplying] = useState(false);
+  const [notice, setNotice] = useState("");
+  function toggleMany(items: Selected[], checked: boolean) {
+    setSelection((cur) => { const next = new Map(cur); for (const item of items) checked ? next.set(item.id, item) : next.delete(item.id); return next; });
+  }
+  async function applyOps(ops: ChangeOperation[]) {
+    setApplying(true);
+    try {
+      const response = await apiFetch("/api/manual/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operations: ops }) });
+      const data = await response.json();
+      if (!response.ok) { window.alert(data.error || "적용하지 못했습니다."); return; }
+      const ok = new Set((data.results as Array<{ id: string; ok: boolean }>).filter((r) => r.ok).map((r) => r.id));
+      // 성공한 것만 화면에 즉시 반영
+      const patch = <T extends { id: string; status: string; dailyBudget?: number; active?: boolean }>(row: T): T => {
+        const op = ops.find((o) => (o as any).id === row.id);
+        if (!op || !ok.has(row.id)) return row;
+        if (op.kind === "set_status") return { ...row, status: op.status, active: op.status === "on" ? row.active ?? true : false };
+        if (op.kind === "update_budget") return { ...row, dailyBudget: op.dailyBudget };
+        return row;
+      };
+      setCampaigns((cur) => cur.map(patch));
+      setAdgroups((cur) => cur.map(patch));
+      setAdsByGroup((cur) => Object.fromEntries(Object.entries(cur).map(([k, list]) => [k, list.map(patch)])));
+      const failed = (data.results as Array<{ id: string; ok: boolean; error?: string }>).filter((r) => !r.ok);
+      setNotice(failed.length ? `${data.applied}건 적용, ${failed.length}건 실패: ${failed[0].error}` : `${data.applied}건 적용했어요.`);
+      if (failed.length) window.alert(`${failed.length}건 실패\n${failed.slice(0, 5).map((f) => f.error).join("\n")}`);
+      setTimeout(() => setNotice(""), 4000);
+    } finally { setApplying(false); }
+  }
+  async function bulkStatus(status: "on" | "off") {
+    const items = [...selection.values()];
+    if (!window.confirm(`선택한 ${items.length}개를 ${status.toUpperCase()} 하시겠습니까?`)) return;
+    await applyOps(items.map((i) => ({ kind: "set_status", channel: i.channel, entityType: i.entityType, id: i.id, status })));
+    setSelection(new Map());
+  }
+  async function bulkBudget() {
+    const items = [...selection.values()].filter((i) => i.entityType !== "ad");
+    if (!items.length) return window.alert("소재에는 예산이 없어요. 캠페인이나 광고그룹을 선택해 주세요.");
+    const value = Number((window.prompt(`선택한 ${items.length}개의 일예산을 얼마로 바꿀까요? (원)`) || "").replace(/[^0-9]/g, ""));
+    if (!value) return;
+    if (!window.confirm(`${items.length}개의 일예산을 ${won.format(value)}으로 바꾸시겠습니까?`)) return;
+    await applyOps(items.map((i) => ({ kind: "update_budget", channel: i.channel, entityType: i.entityType as "campaign" | "adgroup", id: i.id, dailyBudget: value })));
+    setSelection(new Map());
+  }
+
+  // ---- 채팅 첨부 파일 (엑셀·CSV는 브라우저에서 표로 변환, PDF·이미지는 Claude가 직접 읽음) ----
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
+  async function addFiles(files: FileList | null) {
+    for (const file of Array.from(files || []).slice(0, 5)) {
+      try {
+        const lower = file.name.toLowerCase();
+        if (file.size > 3 * 1024 * 1024) { window.alert(`${file.name}: 3MB 이하 파일만 첨부할 수 있어요.`); continue; }
+        if (/\.(xlsx|xlsm|xls)$/.test(lower)) {
+          const XLSX = await import("xlsx");
+          const book = XLSX.read(await file.arrayBuffer(), { type: "array" });
+          const text = book.SheetNames.map((name) => `## 시트: ${name}\n${XLSX.utils.sheet_to_csv(book.Sheets[name], { blankrows: false })}`).join("\n\n");
+          setAttachments((cur) => [...cur, { name: file.name, kind: "text", data: text.slice(0, 60_000) }]);
+        } else if (/\.(csv|tsv|txt|md|json)$/.test(lower)) {
+          setAttachments((cur) => [...cur, { name: file.name, kind: "text", data: "" }]);
+          const text = await file.text();
+          setAttachments((cur) => cur.map((a) => a.name === file.name ? { ...a, data: text.slice(0, 60_000) } : a));
+        } else if (/\.pdf$/.test(lower) || /^image\/(png|jpeg|webp|gif)$/.test(file.type)) {
+          const base64 = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(",")[1] || ""); r.onerror = reject; r.readAsDataURL(file); });
+          setAttachments((cur) => [...cur, { name: file.name, kind: lower.endsWith(".pdf") ? "pdf" : "image", data: base64, mediaType: lower.endsWith(".pdf") ? "application/pdf" : file.type }]);
+        } else window.alert(`${file.name}: 엑셀, CSV, TXT, PDF, 이미지 파일만 첨부할 수 있어요.`);
+      } catch { window.alert(`${file.name}을(를) 읽지 못했어요.`); }
+    }
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
   const abortRef = useRef<AbortController | null>(null);
   function stopMessage() {
     abortRef.current?.abort();
   }
 
   async function sendMessage(preset?: string) {
-    const text = (preset ?? input).trim();
-    if (!text || sending) return;
-    const next = [...messages, { role: "user" as const, content: text }];
+    const typed = (preset ?? input).trim();
+    const files = preset ? [] : attachments;
+    if ((!typed && !files.length) || sending) return;
+    const text = typed || "첨부한 파일을 확인해줘.";
+    const next = [...messages, { role: "user" as const, content: text, attachments: files.map((f) => f.name) }];
+    setAttachments([]);
     setMessages(next);
     setInput("");
     setSending(true);
@@ -440,7 +530,7 @@ export default function Dashboard() {
     abortRef.current = controller;
     try {
       const history = next.map(({ role, content }) => ({ role, content }));
-      const response = await apiFetch("/api/assistant", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, context: { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes, mixLineSummary } }) });
+      const response = await apiFetch("/api/assistant", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, attachments: files, context: { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes, mixLineSummary } }) });
       const data = await response.json();
       setMessages((current) => [...current, { role: "assistant", content: response.ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts, usage: data.usage }]);
     } catch (error) {
@@ -459,6 +549,7 @@ export default function Dashboard() {
         <div className="messages">
           {messages.map((message, index) => <div className={`message ${message.role}`} key={index}>
             <MarkdownLite value={message.content} />
+            {message.attachments?.length ? <small className="attach-note">📎 {message.attachments.join(", ")}</small> : null}
             {message.usage && <small className="usage-note">토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
             {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
             {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(true); }} />)}
@@ -466,7 +557,9 @@ export default function Dashboard() {
           {sending && <div className="message assistant"><span className="typing">● ● ●</span> <button className="link-button" onClick={stopMessage}>중지</button></div>}
         </div>
         <div className="suggestions"><button onClick={() => setInput("이번 달 채널별 성과를 믹스 목표와 비교해줘")}>믹스 대비 성과</button><button onClick={() => setInput("다음 달 미디어 믹스 초안 만들어줘")}>다음 달 믹스</button><button onClick={() => setInput("이번 달 믹스대로 남은 기간 일예산 조정안 만들어줘")}>믹스대로 예산 조정</button><button onClick={() => setInput("성과 좋은 소재 기준으로 Meta 카피 시안 3개 써줘")}>카피 시안</button></div>
-        <div className="composer"><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} placeholder="예: 브랜드 캠페인 일예산 5만원으로 올려줘" />{sending ? <button className="stop-button" onClick={stopMessage}>■ 중지</button> : <button disabled={!input.trim()} onClick={() => void sendMessage()}>전송</button>}</div>
+        {attachments.length > 0 && <div className="attach-chips">{attachments.map((a) => <span key={a.name}>📎 {a.name}<button aria-label={`${a.name} 빼기`} onClick={() => setAttachments((cur) => cur.filter((x) => x.name !== a.name))}>×</button></span>)}</div>}
+        <input ref={fileRef} type="file" hidden multiple accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt,.md,.json,.pdf,image/png,image/jpeg,image/webp" onChange={(e) => void addFiles(e.target.files)} />
+        <div className="composer"><button className="attach-button" title="파일 첨부 (엑셀·CSV·PDF·이미지)" onClick={() => fileRef.current?.click()}>📎</button><textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} placeholder="예: 브랜드 캠페인 일예산 5만원으로 올려줘" />{sending ? <button className="stop-button" onClick={stopMessage}>■ 중지</button> : <button disabled={!input.trim() && !attachments.length} onClick={() => void sendMessage()}>전송</button>}</div>
       </aside>}
   </>);
 
@@ -561,6 +654,12 @@ export default function Dashboard() {
         <span className={`storage-badge ${storageMode}`} title={storageError || undefined}>{storageMode === "supabase" ? "Supabase 저장" : storageMode === "local" ? "이 브라우저에만 저장" : "…"}</span>
       </nav>
       {storageError && <div className="connection-error"><b>저장소 오류</b><span>{storageError}</span></div>}
+      {saIds.length > 0 && <div className="balance-alert">
+        {saIds.map((id) => { const b = balances.find((x) => x.customerId === id); const daily = saDaily(id); const days = b?.bizmoney !== undefined && daily ? Math.floor(b.bizmoney / daily) : undefined;
+          return <span key={id} className={days !== undefined && days < 7 ? "low" : ""}>네이버 SA 비즈머니{saIds.length > 1 ? ` (${accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || id})` : ""} <b>{b?.error ? "조회 실패" : b?.bizmoney !== undefined ? won.format(b.bizmoney) : "…"}</b>{days !== undefined ? ` · 약 ${days}일분` : ""}{days !== undefined && days < 7 ? " · 충전 필요" : ""}</span>; })}
+        {hasGfa && <span className="muted">GFA 잔액은 API 미제공</span>}
+      </div>}
+      {notice && <div className="toast">{notice}</div>}
       {staleKeys.length > 0 && <div className="stale-box"><b>조회되지 않는 계정이 매핑돼 있어요: {staleKeys.join(", ")}</b><span>매니저 계정 번호이거나 접근 권한이 없어진 계정입니다. <button className="link-button" onClick={() => setView("mapping")}>계정 매핑에서 정리하기</button></span></div>}
 
       {dashTab === "report" && <ReportView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
@@ -573,58 +672,69 @@ export default function Dashboard() {
       {dashTab === "detail" && detailTab === "sa" && hasSa && <SaView onOpenCampaign={goToCampaign} apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
       {dashTab === "detail" && (detailTab === "creative" || !hasSa) && <CreativeView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
       {dashTab === "ops" && <>
-      <section className="metrics">
+        <section className="metrics">
           <article><span>이번 달 광고비</span><strong>{won.format(totals.spend)}</strong><small>연결 채널 통합</small></article>
           <article><span>전환</span><strong>{totals.conversions.toLocaleString()}건</strong><small>이번 달 누적</small></article>
-          <article><span>활성 캠페인</span><strong>{totals.active}개</strong><small>전체 {campaigns.length}개</small></article>
+          <article><span>활성 캠페인</span><strong>{totals.active}개</strong><small>전체 {advertiserCampaigns.length}개</small></article>
         </section>
-  
-        {mode === "live" && <section className="connections">
-          {connections.map((connection) => <article key={connection.channel} className={`connection ${connection.status}`}>
-            <div><span className="connection-dot" /><b>{channelLabel[connection.channel]}</b><em>{connection.status === "connected" ? "연결됨" : connection.status === "error" ? "오류" : connection.status === "not_configured" ? "미설정" : "준비 중"}</em></div>
-            <strong>{connection.campaignCount}개</strong>
-            <small title={connection.message}>{connection.message}</small>
-            {connection.channel === "naver_sa" && saIds.map((id) => { const b = balances.find((x) => x.customerId === id); const daily = saDaily(id);
-              return <small key={id} className={`bizmoney ${b?.bizmoney !== undefined && daily && b.bizmoney / daily < 7 ? "low" : ""}`}>비즈머니{saIds.length > 1 ? ` (${accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || id})` : ""} <b>{b?.error ? "조회 실패" : b?.bizmoney !== undefined ? won.format(b.bizmoney) : "…"}</b>{b?.bizmoney !== undefined && daily ? ` · 약 ${Math.floor(b.bizmoney / daily)}일분` : ""}</small>; })}
-            {connection.channel === "naver_gfa" && hasGfa && <small className="bizmoney muted">잔액: GFA API 미제공 (광고관리시스템에서 확인)</small>}
-          </article>)}
-        </section>}
-  
-
+        {connections.filter((c) => c.status === "error").map((c) => <div key={c.channel} className="connection-error"><b>{channelLabel[c.channel]} 연결 오류</b><span>{c.message}</span></div>)}
 
         <FilterBar value={opsFilter} onChange={setOpsFilter} accountKeys={selectedAdvertiser?.accountKeys || []} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />
-  
+
         <section className="panel">
-          <div className="panel-head"><div><h2>캠페인</h2><p>운영 중인 캠페인 {runningCount.toLocaleString()}개{hiddenCount ? ` · 꺼짐/종료 ${hiddenCount.toLocaleString()}개 숨김` : ""}. 검색하면 숨긴 캠페인도 찾을 수 있어요.</p></div><span className="fetched-at">{campaignsFetchedAt ? `${new Date(campaignsFetchedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 기준` : ""}</span><button className="secondary" onClick={() => void refresh(true)}>새로고침</button></div>
+          <div className="panel-head"><div><h2>캠페인</h2><p>운영 중인 캠페인 {runningCount.toLocaleString()}개{hiddenCount ? ` · 꺼짐/종료 ${hiddenCount.toLocaleString()}개 숨김` : ""}. 캠페인을 누르면 바로 아래에 광고그룹이 열려요.</p></div><span className="fetched-at">{campaignsFetchedAt ? `${new Date(campaignsFetchedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 기준` : ""}</span><button className="secondary" onClick={() => void refresh(true)}>새로고침</button></div>
           <div className="campaign-filter">
             <input className="account-search" type="search" placeholder="캠페인·계정 이름으로 검색 (꺼진/종료 캠페인 포함)" value={campaignQuery} onChange={(e) => setCampaignQuery(e.target.value)} />
             <label className="toggle"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> 꺼짐/종료 포함</label>
           </div>
+          {selection.size > 0 && <div className="bulk-bar">
+            <b>{selection.size}개 선택</b>
+            <button className="secondary" disabled={applying} onClick={() => void bulkStatus("on")}>ON</button>
+            <button className="secondary" disabled={applying} onClick={() => void bulkStatus("off")}>OFF</button>
+            <button className="secondary" disabled={applying} onClick={() => void bulkBudget()}>일예산 변경</button>
+            <button className="link-button" onClick={() => setSelection(new Map())}>선택 해제</button>
+            {applying && <span className="viz-sub">적용 중…</span>}
+          </div>}
           {loadError && <div className="connection-error"><b>실계정 연결 오류</b><span>{loadError}</span><small>Vercel 환경변수의 계정 ID, 토큰 및 권한을 확인해 주세요.</small></div>}
           <div className="table-wrap">
-            <table className="campaign-table">
-              <thead><tr><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
+            <table className="campaign-table ops-table">
+              <thead><tr><th className="check-col"><input type="checkbox" aria-label="전체 선택" checked={visibleCampaigns.length > 0 && visibleCampaigns.every((c) => selection.has(c.id))} onChange={(e) => toggleMany(visibleCampaigns.map((c) => ({ id: c.id, channel: c.channel, entityType: "campaign" as const, name: c.name })), e.target.checked)} /></th><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
               <tbody>
-                {loading ? <tr><td colSpan={6}>불러오는 중…</td></tr> : !loadError && visibleCampaigns.length === 0 ? <tr><td colSpan={6}>{scopedCampaigns.length ? (query ? "검색 결과가 없습니다." : `운영 중인 캠페인이 없습니다. 꺼짐/종료 ${hiddenCount}개는 '꺼짐/종료 포함'을 켜면 보여요.`) : advertiserCampaigns.length ? "선택한 필터에 맞는 캠페인이 없습니다." : unmappedCount > 0
+                {loading ? <tr><td colSpan={7}>불러오는 중…</td></tr> : !loadError && visibleCampaigns.length === 0 ? <tr><td colSpan={7}>{scopedCampaigns.length ? (query ? "검색 결과가 없습니다." : `운영 중인 캠페인이 없습니다. 꺼짐/종료 ${hiddenCount}개는 '꺼짐/종료 포함'을 켜면 보여요.`) : advertiserCampaigns.length ? "선택한 필터에 맞는 캠페인이 없습니다." : unmappedCount > 0
                   ? <>캠페인 {unmappedCount.toLocaleString()}개가 있지만 이 광고주에 매핑된 계정이 없습니다. <button className="secondary" onClick={() => setView("mapping")}>계정 매핑하기</button></>
-                  : "이 광고주에 매핑된 캠페인이 없습니다."}</td></tr> : visibleCampaigns.map((campaign) => (
-                  <tr key={campaign.id} className={isRunning(campaign) ? "" : "inactive-row"} onClick={() => void openCampaign(campaign)}>
+                  : "이 광고주에 매핑된 캠페인이 없습니다."}</td></tr> : visibleCampaigns.map((campaign) => [
+                  <tr key={campaign.id} id={`row-${campaign.id}`} className={`${isRunning(campaign) ? "" : "inactive-row"} ${selectedCampaign?.id === campaign.id ? "open-row" : ""}`} onClick={() => selectedCampaign?.id === campaign.id ? setSelectedCampaign(null) : void openCampaign(campaign)}>
+                    <td className="check-col" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selection.has(campaign.id)} onChange={(e) => toggleMany([{ id: campaign.id, channel: campaign.channel, entityType: "campaign", name: campaign.name }], e.target.checked)} /></td>
                     <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
-                    <td><b>{campaign.name}</b><small className="id">{campaign.accountName} · {campaign.id}</small></td>
-                    <td><button className="value-button" onClick={() => {
-                      const value = window.prompt("변경할 일예산을 입력하세요.", String(campaign.dailyBudget));
-                      if (value && Number(value) > 0) void planManual({ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: Number(value) });
-                    }}>{won.format(campaign.dailyBudget)}</button></td>
+                    <td><b>{selectedCampaign?.id === campaign.id ? "▾ " : "▸ "}{campaign.name}</b><small className="id">{campaign.accountName}{campaign.product ? ` · ${campaign.product}` : ""}</small></td>
+                    <td onClick={(e) => e.stopPropagation()}><BudgetButton value={campaign.dailyBudget} disabled={campaign.channel === "naver_gfa"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} /></td>
                     <td>{won.format(campaign.spend)}</td><td>{campaign.roas}%</td>
-                    <td><button className={`status ${campaign.status}`} onClick={() => void planManual({ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: campaign.status === "on" ? "off" : "on" })}>{campaign.status.toUpperCase()}</button></td>
-                  </tr>
-                ))}
+                    <td onClick={(e) => e.stopPropagation()}><StatusButton status={campaign.status} label={campaign.name} disabled={campaign.channel === "naver_gfa"} onToggle={(next) => void applyOps([{ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: next }])} /></td>
+                  </tr>,
+                  selectedCampaign?.id === campaign.id && <tr key={`${campaign.id}-detail`} className="detail-row"><td colSpan={7}>
+                    {detailError && <div className="connection-error">{detailError}</div>}
+                    {!adgroups.length && !detailError && <span className="viz-sub">광고그룹 불러오는 중…</span>}
+                    {adgroups.some((group) => !isRunning(group)) && <label className="toggle entity-toggle"><input type="checkbox" checked={showInactiveGroups} onChange={(e) => setShowInactiveGroups(e.target.checked)} /> 꺼짐/종료 광고그룹 {adgroups.filter((group) => !isRunning(group)).length}개 보기</label>}
+                    <div className="entity-list">{adgroups.filter((group) => showInactiveGroups || isRunning(group)).map((group) => <div className={`entity-group ${isRunning(group) ? "" : "inactive-row"}`} key={group.id}>
+                      <div className="entity-head">
+                        <input type="checkbox" checked={selection.has(group.id)} onChange={(e) => toggleMany([{ id: group.id, channel: group.channel, entityType: "adgroup", name: group.name }], e.target.checked)} />
+                        <button className="entity-name" onClick={() => adsByGroup[group.id] ? setAdsByGroup((cur) => { const next = { ...cur }; delete next[group.id]; return next; }) : void loadAds(group)}><b>{adsByGroup[group.id] ? "▾ " : "▸ "}{group.name}</b></button>
+                        <BudgetButton value={group.dailyBudget} disabled={group.channel === "naver_gfa" || group.channel === "google_ads"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: group.channel, entityType: "adgroup", id: group.id, dailyBudget: v }])} />
+                        <StatusButton status={group.status} label={group.name} disabled={group.channel === "naver_gfa"} onToggle={(next) => void applyOps([{ kind: "set_status", channel: group.channel, entityType: "adgroup", id: group.id, status: next }])} />
+                      </div>
+                      {adsByGroup[group.id]?.map((ad) => <div className={`ad-row ${ad.active === false ? "inactive-row" : ""}`} key={ad.id}>
+                        <input type="checkbox" checked={selection.has(ad.id)} onChange={(e) => toggleMany([{ id: ad.id, channel: ad.channel, entityType: "ad", name: ad.name }], e.target.checked)} />
+                        {ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span className="ad-thumb empty" />}
+                        <b>{ad.name}</b>
+                        <StatusButton status={ad.status} label={ad.name} disabled={ad.channel === "naver_gfa"} onToggle={(next) => void applyOps([{ kind: "set_status", channel: ad.channel, entityType: "ad", id: ad.id, status: next }])} />
+                      </div>)}
+                    </div>)}</div>
+                  </td></tr>,
+                ])}
               </tbody>
             </table>
           </div>
         </section>
-  
-        {selectedCampaign && <section id="campaign-detail" className="panel detail-panel"><div className="panel-head"><div><h2>{selectedCampaign.name}</h2><p>광고그룹/광고세트를 선택하면 소재를 조회합니다.</p></div><button className="secondary" onClick={() => setSelectedCampaign(null)}>닫기</button></div>{detailError && <div className="connection-error">{detailError}</div>}<div className="entity-list">{adgroups.some((group) => !isRunning(group)) && <label className="toggle entity-toggle"><input type="checkbox" checked={showInactiveGroups} onChange={(e) => setShowInactiveGroups(e.target.checked)} /> 꺼짐/종료 광고그룹 {adgroups.filter((group) => !isRunning(group)).length}개 보기</label>}{adgroups.filter((group) => showInactiveGroups || isRunning(group)).map((group) => <div className={`entity-group ${isRunning(group) ? "" : "inactive-row"}`} key={group.id}><button onClick={() => void loadAds(group)}><b>{group.name}</b><span>{won.format(group.dailyBudget)} · {group.status.toUpperCase()}</span></button>{adsByGroup[group.id]?.map((ad) => <div className={`ad-row ${ad.active === false ? "inactive-row" : ""}`} key={ad.id}>{ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span>소재</span>}<b>{ad.name}</b><em>{ad.status.toUpperCase()}</em></div>)}</div>)}</div></section>}
       </>}
 
       {chatUi}
