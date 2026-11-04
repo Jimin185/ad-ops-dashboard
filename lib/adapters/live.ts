@@ -544,29 +544,34 @@ async function metaCreatives(accountId: string, since: string, until: string): P
 async function gfaCreatives(accountId: string, since: string, until: string): Promise<CreativeRow[]> {
   const range = gfaClampRange(since, until);
   const base = `/adAccounts/${accountId}`;
-  const creatives: any[] = [];
-  for (let page = 0; page < 20; page++) {
-    const items = gfaList(await gfaGet(`${base}/creatives`, { page: String(page), size: "100" }));
-    creatives.push(...items);
-    if (items.length < 100) break;
-  }
-  const [perf, conv] = range ? await Promise.all([
+  if (!range) return [];
+  // 성과가 있는 소재만 골라 상세(이름·이미지)를 받는다. 전체 소재 목록(수천 개)을 받으면 60초를 넘긴다.
+  const [perf, conv] = await Promise.all([
     gfaPaged(`${base}/performance/past/creatives`, range).catch(() => []),
     gfaPaged(`${base}/performance/conversion/past/creatives`, range).catch(() => []),
-  ]) : [[], []];
-  const stats = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; revenue: number }>();
-  const stat = (no: unknown) => { const key = String(no ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 }); return stats.get(key)!; };
-  const creativeCampaign = new Map<string, string>();
-  for (const row of perf) { creativeCampaign.set(String(row.creativeNo ?? row.adNo), String(row.campaignNo ?? "")); const st = stat(row.creativeNo ?? row.adNo); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
-  for (const row of conv) if (row.convType === "PURCHASE") { const st = stat(row.creativeNo ?? row.adNo); st.conversions += num(row.convCount); st.revenue += num(row.convSales); }
-  return creatives.map((c: any) => {
-    const id = String(c.no ?? c.creativeNo ?? c.id);
-    const st = stats.get(id) || { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 };
-    const media = c.medias?.[0] || c.media || c.images?.[0] || c.image || {};
-    return { id, channel: "naver_gfa" as const, accountId, campaignId: creativeCampaign.get(id) ? packed("naver_gfa", accountId, creativeCampaign.get(id)!) : undefined, name: c.name || `소재 ${id}`, campaignName: c.campaignName, groupName: c.adSetName,
-      imageUrl: media.url || media.imageUrl || c.imageUrl || c.thumbnailUrl || c.previewUrl, headline: c.title || c.headline, body: c.description || c.body,
-      status: c.activated === undefined ? c.status : (c.activated ? "ON" : "OFF"), ...st };
-  }).filter((row) => row.spend > 0).sort((a, b) => b.spend - a.spend).slice(0, 60);
+  ]);
+  const stats = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; revenue: number; campaignNo: string }>();
+  const stat = (row: any) => { const key = String(row.creativeNo ?? row.adNo ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, campaignNo: String(row.campaignNo ?? "") }); return stats.get(key)!; };
+  for (const row of perf) { const st = stat(row); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
+  for (const row of conv) if (row.convType === "PURCHASE") { const st = stat(row); st.conversions += num(row.convCount); st.revenue += num(row.convSales); }
+  const top = [...stats.entries()].filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend).slice(0, 60);
+  // 소재 상세는 ID별로 오래 캐시 (이름·이미지는 거의 안 바뀜)
+  const detailKey = `gfa-creative-detail:${accountId}`;
+  const details = (await cacheGet<Record<string, any>>(detailKey))?.value || {};
+  const missing = top.map(([id]) => id).filter((id) => !(id in details));
+  for (let i = 0; i < missing.length; i += 10) {
+    await Promise.all(missing.slice(i, i + 10).map(async (id) => {
+      try { const c = await gfaGet(`${base}/creatives/${id}`); const media = c.image || c.medias?.[0] || c.media || {}; details[id] = { name: c.name, image: media.imageUrl || media.url || c.imageUrl, title: c.title || c.headline, body: c.description, activated: c.activated, status: c.status }; }
+      catch { details[id] = null; }
+    }));
+  }
+  if (missing.length) await cacheSet(detailKey, details, Date.now() + 14 * 86400_000);
+  return top.map(([id, st]) => {
+    const c = details[id] || {};
+    return { id, channel: "naver_gfa" as const, accountId, campaignId: st.campaignNo ? packed("naver_gfa", accountId, st.campaignNo) : undefined, name: c.name || `소재 ${id}`,
+      imageUrl: c.image, headline: c.title, body: c.body, status: c.activated === undefined ? c.status : (c.activated ? "ON" : "OFF"),
+      spend: st.spend, impressions: st.impressions, clicks: st.clicks, conversions: st.conversions, revenue: st.revenue };
+  });
 }
 
 export async function getCreativeReport(accountKeys: string[], since: string, until: string, force = false) {
@@ -574,27 +579,38 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
     .filter((t) => t.channel === "meta" || t.channel === "naver_gfa");
   const errors: Array<{ channel: Channel; accountId: string; message: string }> = [];
   let oldest = Date.now();
+  const pendingAccounts: string[] = [];
+  const timeLimit = <T,>(promise: Promise<T>, ms: number) => Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), ms))]);
   const rows = (await Promise.all(targets.map(async (t) => {
     // 지난 주 이전 기간은 영구 적재, 그 외는 하루 한 번 갱신
     const key = `creative:v2:${t.channel}:${t.accountId}:${since}:${until}`;
     const cached = force ? null : await cacheGet<CreativeRow[]>(key);
     if (cached) { oldest = Math.min(oldest, cached.updatedAt); return cached.value; }
     try {
-      const rows = t.channel === "meta" ? await metaCreatives(t.accountId, since, until) : await gfaCreatives(t.accountId, since, until);
-      await cacheSet(key, rows, isFinalDate(until) ? null : nextDailyRefresh());
-      return rows;
+      const work = (t.channel === "meta" ? metaCreatives(t.accountId, since, until) : gfaCreatives(t.accountId, since, until))
+        .then(async (rows) => { await cacheSet(key, rows, isFinalDate(until) ? null : nextDailyRefresh()); return rows; });
+      // 45초 안에 안 끝나는 계정은 다음 호출에서 이어서 (끝난 계정은 이미 저장됨)
+      const result = await timeLimit(work, 45_000);
+      if (result === "timeout") { pendingAccounts.push(`${t.channel}:${t.accountId}`); return []; }
+      return result;
     }
     catch (error) { errors.push({ ...t, message: error instanceof Error ? error.message : String(error) }); return []; }
   }))).flat();
-  return { since, until, rows, errors, fetchedAt: new Date(oldest).toISOString() };
+  return { since, until, rows, errors, pending: pendingAccounts, fetchedAt: new Date(oldest).toISOString() };
 }
 
 // ---- 네이버 SA 대용량 리포트 (stat-reports: 비동기 생성 → 다운로드) ----
 export async function naverStatReport(customerId: string, reportTp: string, statDt: string, waitMs = 25_000): Promise<string[][] | "pending"> {
   const key = naverKeyFor(customerId);
-  const job = await naverSigned(key, "POST", "/stat-reports", { reportTp, statDt: statDt.replace(/-/g, "") });
-  const jobId = job?.reportJobId;
-  if (!jobId) throw new Error(`리포트 요청 실패: ${JSON.stringify(job).slice(0, 200)}`);
+  // 이미 요청해 둔 리포트가 있으면 그 작업을 이어서 기다린다 (매번 새로 요청하면 영원히 끝나지 않음)
+  const jobKey = `sa-job:${customerId}:${reportTp}:${statDt}`;
+  let jobId = (await cacheGet<number>(jobKey))?.value;
+  if (!jobId) {
+    const job = await naverSigned(key, "POST", "/stat-reports", { reportTp, statDt: statDt.replace(/-/g, "") });
+    jobId = job?.reportJobId;
+    if (!jobId) throw new Error(`리포트 요청 실패: ${JSON.stringify(job).slice(0, 200)}`);
+    await cacheSet(jobKey, jobId, Date.now() + 3 * 3600_000);
+  }
   const started = Date.now();
   while (Date.now() - started < waitMs) {
     const status = await naverSigned(key, "GET", `/stat-reports/${jobId}`);
@@ -606,7 +622,7 @@ export async function naverStatReport(customerId: string, reportTp: string, stat
       if (!text.trim() || text.trim().startsWith("{")) return [];
       return text.trim().split("\n").map((line) => line.split("\t"));
     }
-    if (status?.status === "NONE" || status?.status === "ERROR") return [];
+    if (status?.status === "NONE" || status?.status === "ERROR" || status?.status === "REGIST_FAIL") { await cacheSet(jobKey, 0, Date.now() + 1000); return []; }
     await new Promise((r) => setTimeout(r, 1500));
   }
   return "pending";
@@ -626,7 +642,7 @@ async function saDay(customerId: string, date: string, force: boolean): Promise<
     const finalOk = isFinalDate(date) && new Date(cached.value.at).getTime() >= new Date(`${date}T00:00:00Z`).getTime() + 3 * 86400_000;
     if (finalOk || (!force && new Date(cached.value.at).getTime() >= nextDailyRefresh() - 24 * 3600_000)) return cached.value;
   }
-  const [ad, adConv, term, termConv] = await Promise.all(["AD", "AD_CONVERSION", "SHOPPINGKEYWORD_DETAIL", "SHOPPINGKEYWORD_CONVERSION_DETAIL"].map((tp) => naverStatReport(customerId, tp, date, 35_000)));
+  const [ad, adConv, term, termConv] = await Promise.all(["AD", "AD_CONVERSION", "SHOPPINGKEYWORD_DETAIL", "SHOPPINGKEYWORD_CONVERSION_DETAIL"].map((tp) => naverStatReport(customerId, tp, date, 12_000)));
   if ([ad, adConv, term, termConv].some((r) => r === "pending")) return "pending";
   const day: SaDay = { ad: {}, term: {} };
   for (const r of ad as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; addVals(day.ad, k, 0, num(r[9])); addVals(day.ad, k, 1, num(r[10])); addVals(day.ad, k, 2, num(r[11])); }
@@ -669,9 +685,9 @@ export async function getSaInsights(customerId: string, since: string, until: st
   const started = Date.now();
   const days: SaDay[] = [];
   let pending = 0;
-  for (let i = 0; i < dates.length; i += 3) {
-    if (Date.now() - started > 40_000) { pending += dates.length - i; break; }
-    const batch = await Promise.all(dates.slice(i, i + 3).map((d) => saDay(customerId, d, force).catch(() => "pending" as const)));
+  for (let i = 0; i < dates.length; i += 4) {
+    if (Date.now() - started > 25_000) { pending += dates.length - i; break; }
+    const batch = await Promise.all(dates.slice(i, i + 4).map((d) => saDay(customerId, d, force).catch(() => "pending" as const)));
     for (const d of batch) if (d === "pending") pending++; else days.push(d);
   }
   if (pending) return { status: "loading" as const, ready: dates.length - pending, total: dates.length };
