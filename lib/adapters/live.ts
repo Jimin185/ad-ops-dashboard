@@ -110,7 +110,7 @@ async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
       return { id: packed("naver_sa", account.id, row.nccCampaignId), channel: "naver_sa" as const, name: row.name,
         dailyBudget: num(row.dailyBudget), status: (row.userLock ? "off" : "on") as EntityStatus, spend, conversions: Math.round(num(s.ccnt)),
         roas: spend ? Math.round(num(s.convAmt) / spend * 100) : 0, accountId: account.id, accountName: account.name,
-        active: !row.userLock && row.status === "ELIGIBLE", rawStatus: row.status };
+        active: !row.userLock && row.status === "ELIGIBLE", rawStatus: row.status, product: productOf(row.campaignTp) };
     });
   });
 }
@@ -179,7 +179,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const { since, until } = monthRange();
   return settleAccounts(accounts, async (account) => {
     const body = await metaGet(`act_${account.id}/campaigns`, {
-      fields: `id,name,status,effective_status,stop_time,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
+      fields: `id,name,status,effective_status,stop_time,objective,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
       limit: "500",
     });
     return (body.data || []).filter((row: any) => includeOff || row.status === "ACTIVE").map((row: any) => {
@@ -190,7 +190,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / 100,
         status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
         accountId: account.id, accountName: account.name,
-        active: row.effective_status === "ACTIVE" && (!row.stop_time || new Date(row.stop_time).getTime() > Date.now()), rawStatus: row.effective_status || row.status };
+        active: row.effective_status === "ACTIVE" && (!row.stop_time || new Date(row.stop_time).getTime() > Date.now()), rawStatus: row.effective_status || row.status, product: productOf(row.objective) };
     });
   });
 }
@@ -229,14 +229,14 @@ async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await googleAccounts();
   return settleAccounts(accounts, async (account) => {
     const status = includeOff ? "campaign.status != 'REMOVED'" : "campaign.status = 'ENABLED'";
-    const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
+    const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status, campaign.advertising_channel_type, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
     return rows.map((row: any) => {
       const spend = num(row.metrics?.costMicros) / 1_000_000;
       return { id: packed("google_ads", account.id, String(row.campaign.id)), channel: "google_ads" as const, name: row.campaign.name,
         dailyBudget: num(row.campaignBudget?.amountMicros) / 1_000_000, status: asStatus(row.campaign.status), spend,
         conversions: Math.round(num(row.metrics?.conversions)), roas: spend ? Math.round(num(row.metrics?.conversionsValue) / spend * 100) : 0,
         accountId: account.id, accountName: account.name,
-        active: row.campaign.status === "ENABLED" && !["ENDED", "SUSPENDED", "NONE"].includes(row.campaign.servingStatus), rawStatus: row.campaign.servingStatus || row.campaign.status };
+        active: row.campaign.status === "ENABLED" && !["ENDED", "SUSPENDED", "NONE"].includes(row.campaign.servingStatus), rawStatus: row.campaign.servingStatus || row.campaign.status, product: productOf(row.campaign.advertisingChannelType) };
     });
   });
 }
@@ -356,7 +356,7 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       return { id: packed("naver_gfa", account.id, id), channel: "naver_gfa" as const, name: row.name || `캠페인 ${id}`,
         dailyBudget: num(row.dailyBudget ?? row.budget?.dailyBudget ?? row.budgetAmount), status: gfaStatus(row), spend: s.spend,
         conversions: Math.round(s.conversions), roas: s.spend ? Math.round(s.revenue / s.spend * 100) : 0, accountId: account.id, accountName: account.name,
-        active: gfaStatus(row) === "on" && !row.deleted && !["COMPLETED", "FINISHED", "ENDED", "DELETED", "STOPPED", "EXPIRED"].includes(String(row.status || "").toUpperCase()), rawStatus: row.status };
+        active: gfaStatus(row) === "on" && !row.deleted && !["COMPLETED", "FINISHED", "ENDED", "DELETED", "STOPPED", "EXPIRED"].includes(String(row.status || "").toUpperCase()), rawStatus: row.status, product: productOf(row.objective) };
     }).filter((row) => includeOff || row.status === "on" || row.spend > 0);
   });
 }
@@ -508,7 +508,7 @@ export { eachDate };
 async function metaCreatives(accountId: string, since: string, until: string): Promise<CreativeRow[]> {
   const insights = await metaPaged(`act_${accountId}/insights`, {
     level: "ad", time_range: JSON.stringify({ since, until }),
-    fields: "ad_id,ad_name,adset_name,campaign_name,spend,impressions,clicks,actions,action_values",
+    fields: "ad_id,ad_name,adset_name,campaign_id,campaign_name,spend,impressions,clicks,actions,action_values",
   });
   const top = insights.filter((row: any) => num(row.spend) > 0).sort((a: any, b: any) => num(b.spend) - num(a.spend)).slice(0, 60);
   const details: Record<string, any> = {};
@@ -521,7 +521,7 @@ async function metaCreatives(accountId: string, since: string, until: string): P
   return top.map((row: any) => {
     const creative = details[row.ad_id]?.creative || {};
     const link = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
-    return { id: row.ad_id, channel: "meta" as const, accountId, name: row.ad_name, campaignName: row.campaign_name, groupName: row.adset_name,
+    return { id: row.ad_id, channel: "meta" as const, accountId, campaignId: packed("meta", accountId, String(row.campaign_id)), name: row.ad_name, campaignName: row.campaign_name, groupName: row.adset_name,
       imageUrl: creative.image_url || link.picture || link.image_url || creative.thumbnail_url, headline: creative.title || link.name || link.title, body: creative.body || link.message,
       status: details[row.ad_id]?.effective_status, spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
       conversions: metaPick(row.actions), revenue: metaPick(row.action_values) };
@@ -544,13 +544,14 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
   ]) : [[], []];
   const stats = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; revenue: number }>();
   const stat = (no: unknown) => { const key = String(no ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 }); return stats.get(key)!; };
-  for (const row of perf) { const st = stat(row.creativeNo ?? row.adNo); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
+  const creativeCampaign = new Map<string, string>();
+  for (const row of perf) { creativeCampaign.set(String(row.creativeNo ?? row.adNo), String(row.campaignNo ?? "")); const st = stat(row.creativeNo ?? row.adNo); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
   for (const row of conv) if (row.convType === "PURCHASE") { const st = stat(row.creativeNo ?? row.adNo); st.conversions += num(row.convCount); st.revenue += num(row.convSales); }
   return creatives.map((c: any) => {
     const id = String(c.no ?? c.creativeNo ?? c.id);
     const st = stats.get(id) || { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 };
     const media = c.medias?.[0] || c.media || c.images?.[0] || c.image || {};
-    return { id, channel: "naver_gfa" as const, accountId, name: c.name || `소재 ${id}`, campaignName: c.campaignName, groupName: c.adSetName,
+    return { id, channel: "naver_gfa" as const, accountId, campaignId: creativeCampaign.get(id) ? packed("naver_gfa", accountId, creativeCampaign.get(id)!) : undefined, name: c.name || `소재 ${id}`, campaignName: c.campaignName, groupName: c.adSetName,
       imageUrl: media.url || media.imageUrl || c.imageUrl || c.thumbnailUrl || c.previewUrl, headline: c.title || c.headline, body: c.description || c.body,
       status: c.activated === undefined ? c.status : (c.activated ? "ON" : "OFF"), ...st };
   }).filter((row) => row.spend > 0).sort((a, b) => b.spend - a.spend).slice(0, 60);
@@ -811,30 +812,42 @@ export async function executeMediaPlan(steps: MediaStep[], allowedKeys: string[]
   return { success: true, completed: steps.length, results };
 }
 
-// TEMP: 신규 API 형식 확인용
+// TEMP: NAVER API HUB 경로 확인용
 export async function debugNewApis() {
   const out: Record<string, unknown> = {};
   const id = env("NAVER_OPENAPI_KEY_ID") || "", key = env("NAVER_OPENAPI_KEY") || "";
-  const tryFetch = async (name: string, url: string, init: RequestInit) => {
-    try { const r = await fetch(url, { ...init, cache: "no-store" }); out[name] = { status: r.status, body: (await r.text()).slice(0, 400) }; }
+  const h = { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key, "Content-Type": "application/json" };
+  const base = "https://naverapihub.apigw.ntruss.com";
+  const q = encodeURIComponent("데스커 책상");
+  const trend = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", keywordGroups: [{ groupName: "책상", keywords: ["책상"] }] });
+  const shop = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", category: [{ name: "가구", param: ["50000004"] }] });
+  const shopKw = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", category: "50000004", keyword: [{ name: "책상", param: ["책상"] }] });
+  const tries: Array<[string, string, RequestInit]> = [
+    ["news", `${base}/search/v1/news?query=${q}&display=2`, { headers: h }],
+    ["blog", `${base}/search/v1/blog?query=${q}&display=2`, { headers: h }],
+    ["cafe", `${base}/search/v1/cafearticle?query=${q}&display=2`, { headers: h }],
+    ["datalab_search", `${base}/datalab/v1/search`, { method: "POST", headers: h, body: trend }],
+    ["datalab_shop_categories", `${base}/datalab/v1/shopping/categories`, { method: "POST", headers: h, body: shop }],
+    ["datalab_shop_kw", `${base}/datalab/v1/shopping/category/keywords`, { method: "POST", headers: h, body: shopKw }],
+    ["datalab_search_v2", `${base}/search-trend/v1/search`, { method: "POST", headers: h, body: trend }],
+    ["datalab_shop_v2", `${base}/shopping-insight/v1/categories`, { method: "POST", headers: h, body: shop }],
+  ];
+  for (const [name, url, init] of tries) {
+    try { const r = await fetch(url, { ...init, cache: "no-store" }); out[name] = { status: r.status, body: (await r.text()).slice(0, 350) }; }
     catch (e) { out[name] = { error: String(e) }; }
-  };
-  const trendBody = JSON.stringify({ startDate: "2026-08-01", endDate: "2026-10-31", timeUnit: "month", keywordGroups: [{ groupName: "책상", keywords: ["책상"] }] });
-  await tryFetch("ncp_search_news", "https://naveropenapi.apigw.ntruss.com/search/v1/news?query=" + encodeURIComponent("데스커"), { headers: { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key } });
-  await tryFetch("ncp_datalab", "https://naveropenapi.apigw.ntruss.com/datalab/v1/search", { method: "POST", headers: { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key, "Content-Type": "application/json" }, body: trendBody });
-  await tryFetch("dev_news_idkey", "https://openapi.naver.com/v1/search/news.json?query=" + encodeURIComponent("데스커"), { headers: { "X-Naver-Client-Id": id, "X-Naver-Client-Secret": key } });
-  await tryFetch("dev_news_keyid", "https://openapi.naver.com/v1/search/news.json?query=" + encodeURIComponent("데스커"), { headers: { "X-Naver-Client-Id": key, "X-Naver-Client-Secret": id } });
-  await tryFetch("dev_datalab_idkey", "https://openapi.naver.com/v1/datalab/search", { method: "POST", headers: { "X-Naver-Client-Id": id, "X-Naver-Client-Secret": key, "Content-Type": "application/json" }, body: trendBody });
-  await tryFetch("ncp_search_news_v2", "https://naveropenapi.apigw.ntruss.com/v1/search/news.json?query=" + encodeURIComponent("데스커"), { headers: { "X-NCP-APIGW-API-KEY-ID": id, "X-NCP-APIGW-API-KEY": key } });
-  try { out.sa_bizmoney = await naverRequest("GET", "/billing/bizmoney", undefined, "1922718"); } catch (e) { out.sa_bizmoney = String(e); }
-  try { const k = await naverRequest("GET", "/keywordstool?hintKeywords=" + encodeURIComponent("책상") + "&showDetail=1", undefined, "1922718"); out.sa_keywordstool = JSON.stringify(k).slice(0, 500); } catch (e) { out.sa_keywordstool = String(e); }
-  for (const p of ["/adAccounts/44324", "/adAccounts/44324/bizmoney", "/adAccounts/44324/balance", "/adAccounts/44324/budget", "/bizmoney"]) {
-    try { out[`gfa${p}`] = JSON.stringify(await gfaGet(p)).slice(0, 500); } catch (e) { out[`gfa${p}`] = String(e).slice(0, 200); }
   }
-  try { const r = await gfaGet("/adAccounts", { page: "0", size: "1" }); out.gfa_account_item = JSON.stringify(gfaList(r)[0]).slice(0, 600); } catch (e) { out.gfa_account_item = String(e); }
-  try { const r = await gfaGet("/adAccounts/44324/performance/past/campaigns", { startDate: "2026-09-01", endDate: "2026-10-31", timeUnit: "monthly", limit: "3" }); out.gfa_monthly = JSON.stringify(r).slice(0, 600); } catch (e) { out.gfa_monthly = String(e); }
   return out;
 }
+
+// 광고상품 이름 (채널별 캠페인 유형/목표)
+export const PRODUCT_LABEL: Record<string, string> = {
+  WEB_SITE: "파워링크", SHOPPING: "쇼핑검색", BRAND_SEARCH: "브랜드검색", POWER_CONTENTS: "파워콘텐츠", PLACE: "플레이스",
+  SEARCH: "검색", PERFORMANCE_MAX: "PMax", DISPLAY: "디스플레이", VIDEO: "동영상(유튜브)", DEMAND_GEN: "디맨드젠", MULTI_CHANNEL: "앱", SMART: "스마트",
+  OUTCOME_SALES: "판매", OUTCOME_LEADS: "잠재고객", OUTCOME_TRAFFIC: "트래픽", OUTCOME_AWARENESS: "인지도", OUTCOME_ENGAGEMENT: "참여", OUTCOME_APP_PROMOTION: "앱 홍보",
+  CONVERSIONS: "전환", LINK_CLICKS: "트래픽", REACH: "도달", BRAND_AWARENESS: "인지도", VIDEO_VIEWS: "동영상 조회", PRODUCT_CATALOG_SALES: "카탈로그 판매",
+  CONVERSION: "전환", CATALOG: "카탈로그", WEB_SITE_TRAFFIC: "웹사이트 트래픽", INSTALL_APP: "앱 설치", VIDEO_VIEW: "동영상 조회", AWARENESS: "인지도", SHOPPING_PROMOTION: "쇼핑 프로모션", ADVOOST_SHOPPING: "애드부스트 쇼핑", LEAD: "참여·잠재고객",
+};
+function productOf(value?: string) { return value ? (PRODUCT_LABEL[value] || value) : undefined; }
 
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
