@@ -314,6 +314,23 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   });
 }
 
+// TEMP: GFA 응답 구조 진단용 (확인 후 제거)
+export async function debugGfa(account: string) {
+  const { since, until } = monthRange();
+  const range = { startDate: since, endDate: until, timeUnit: "daily", limit: "5" };
+  const probe = async (path: string, params: Record<string, string>) => {
+    try { const body = await gfaGet(path, params); return { keys: Object.keys(body || {}), sample: gfaList(body).slice(0, 2), next: body?.next ?? null }; }
+    catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
+  };
+  return {
+    range,
+    campaigns: await probe(`/adAccounts/${account}/campaigns`, { page: "0", size: "2" }),
+    perfAdSets: await probe(`/adAccounts/${account}/performance/past/adSets`, range),
+    perfCampaigns: await probe(`/adAccounts/${account}/performance/past/campaigns`, range),
+    convAdSets: await probe(`/adAccounts/${account}/performance/conversion/past/adSets`, range),
+  };
+}
+
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
 export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
