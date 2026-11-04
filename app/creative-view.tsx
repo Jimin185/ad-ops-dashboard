@@ -20,19 +20,21 @@ export function CreativeView({ accountKeys, apiFetch }: { accountKeys: string[];
   const [rows, setRows] = useState<CreativeRow[]>([]);
   const [errors, setErrors] = useState<Array<{ channel: string; accountId: string; message: string }>>([]);
   const [loading, setLoading] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [fetchedAt, setFetchedAt] = useState("");
   const range = useMemo(() => periodRange(period), [period]);
 
   useEffect(() => {
     if (!targets.length) return;
     let cancelled = false;
     setLoading(true);
-    apiFetch("/api/creatives", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts: targets, since: range.since, until: range.until }) })
-      .then((r) => r.json()).then((data) => { if (cancelled) return; setRows(data.rows || []); setErrors(data.errors || (data.error ? [{ channel: "", accountId: "", message: data.error }] : [])); })
+    apiFetch("/api/creatives", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts: targets, since: range.since, until: range.until, refresh: reloadKey > 0 }) })
+      .then((r) => r.json()).then((data) => { if (cancelled) return; setRows(data.rows || []); setFetchedAt(data.fetchedAt || ""); setErrors(data.errors || (data.error ? [{ channel: "", accountId: "", message: data.error }] : [])); })
       .catch(() => !cancelled && setErrors([{ channel: "", accountId: "", message: "소재 성과를 불러오지 못했습니다." }]))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targets.join(","), range.since, range.until]);
+  }, [targets.join(","), range.since, range.until, reloadKey]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -54,7 +56,7 @@ export function CreativeView({ accountKeys, apiFetch }: { accountKeys: string[];
         <input className="account-search" type="search" placeholder="소재·캠페인·광고세트 이름으로 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
         <label className="sort-select">정렬 <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>{SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
       </div>
-      <small className="viz-sub">{range.since} ~ {range.until} · 소재 {visible.length}개 · 평균 ROAS {Math.round(avgRoas)}%{loading ? " · 불러오는 중…" : ""}</small>
+      <small className="viz-sub">{range.since} ~ {range.until} · 소재 {visible.length}개 · 평균 ROAS {Math.round(avgRoas)}%{loading ? " · 불러오는 중…" : ""} · 하루 한 번(오전 6시) 갱신, 지난 주 이전은 저장된 값 사용 <button className="link-button" disabled={loading} onClick={() => setReloadKey((k) => k + 1)}>지금 새로 가져오기</button></small>
       {errors.map((e, i) => <div className="connection-error" key={i}><b>{e.channel === "meta" ? "Meta" : e.channel === "naver_gfa" ? "네이버 GFA" : "오류"} {e.accountId}</b><span>{e.message}</span></div>)}
       <div className="creative-grid">
         {visible.map((r, index) => {

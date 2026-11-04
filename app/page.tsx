@@ -137,15 +137,17 @@ export default function Dashboard() {
     { role: "assistant", content: "안녕하세요. 성과 리포트, 월별 미디어 믹스 초안, 믹스에 맞춘 예산 조정, 소재 카피 시안까지 도와드릴게요. 예산·상태 변경은 확인 후에만 적용됩니다." },
   ]);
 
-  const refresh = useCallback(async () => {
+  const [campaignsFetchedAt, setCampaignsFetchedAt] = useState("");
+  const refresh = useCallback(async (force = false) => {
     setLoading(true);
     setLoadError("");
-    const response = await apiFetch("/api/campaigns", { cache: "no-store" });
+    const response = await apiFetch(`/api/campaigns${force ? "?refresh=1" : ""}`, { cache: "no-store" });
     const data = await response.json();
     if (data.mode) setMode(data.mode);
     if (response.ok) {
       setCampaigns(data.campaigns);
       setConnections(data.connections || []);
+      setCampaignsFetchedAt(data.fetchedAt || "");
     } else {
       setCampaigns([]);
       setLoadError(data.error || "실계정 캠페인을 불러오지 못했습니다.");
@@ -317,14 +319,14 @@ export default function Dashboard() {
     saveRegisteredSa([...loadRegisteredNaverSa().filter((item) => item.id !== data.account.id), { id: data.account.id, name: data.account.name, token: data.token }]);
     setSaForm({ name: "", customerId: "", apiKey: "", secretKey: "" });
     setSaStatus({ state: "done", message: `${data.account.name} 등록 완료 · 캠페인 ${data.campaignCount}개 확인` });
-    await Promise.all([loadAccounts(), refresh()]);
+    await Promise.all([loadAccounts(), refresh(true)]);
   }
 
   async function removeNaverSa(id: string) {
     if (!window.confirm("이 네이버 SA 계정 등록을 삭제할까요? 매핑도 함께 해제됩니다.")) return;
     saveRegisteredSa(loadRegisteredNaverSa().filter((item) => item.id !== id));
     setAdvertisers((current) => current.map((advertiser) => ({ ...advertiser, accountKeys: advertiser.accountKeys.filter((key) => key !== `naver_sa:${id}`) })));
-    await Promise.all([loadAccounts(), refresh()]);
+    await Promise.all([loadAccounts(), refresh(true)]);
   }
 
   function createAdvertiser() {
@@ -492,7 +494,7 @@ export default function Dashboard() {
         <nav className="channel-tabs"><button className={selectedChannel === "all" ? "active" : ""} onClick={() => setSelectedChannel("all")}>전체</button>{(Object.keys(channelLabel) as Channel[]).map((channel) => <button key={channel} className={selectedChannel === channel ? "active" : ""} onClick={() => setSelectedChannel(channel)}>{channelLabel[channel]}</button>)}</nav>
   
         <section className="panel">
-          <div className="panel-head"><div><h2>캠페인</h2><p>운영 중인 캠페인 {runningCount.toLocaleString()}개{hiddenCount ? ` · 꺼짐/종료 ${hiddenCount.toLocaleString()}개 숨김` : ""}. 검색하면 숨긴 캠페인도 찾을 수 있어요.</p></div><button className="secondary" onClick={refresh}>새로고침</button></div>
+          <div className="panel-head"><div><h2>캠페인</h2><p>운영 중인 캠페인 {runningCount.toLocaleString()}개{hiddenCount ? ` · 꺼짐/종료 ${hiddenCount.toLocaleString()}개 숨김` : ""}. 검색하면 숨긴 캠페인도 찾을 수 있어요.</p></div><span className="fetched-at">{campaignsFetchedAt ? `${new Date(campaignsFetchedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 기준` : ""}</span><button className="secondary" onClick={() => void refresh(true)}>새로고침</button></div>
           <div className="campaign-filter">
             <input className="account-search" type="search" placeholder="캠페인·계정 이름으로 검색 (꺼진/종료 캠페인 포함)" value={campaignQuery} onChange={(e) => setCampaignQuery(e.target.value)} />
             <label className="toggle"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> 꺼짐/종료 포함</label>
@@ -532,7 +534,7 @@ export default function Dashboard() {
             <MarkdownLite value={message.content} />
             {message.usage && <small className="usage-note">토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
             {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
-            {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(); }} />)}
+            {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(true); }} />)}
           </div>)}
           {sending && <div className="message assistant"><span className="typing">● ● ●</span> <button className="link-button" onClick={stopMessage}>중지</button></div>}
         </div>

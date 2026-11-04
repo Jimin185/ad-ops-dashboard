@@ -223,3 +223,5 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 
 .composer .stop-button { background:var(--critical); border-color:var(--critical); color:#fff; }
 .usage-note { display:block; margin-top:6px; font-size:10px; color:var(--muted); }
+.fetched-at { color:var(--muted); font-size:12px; margin-right:8px; }
+.report-range .link-button { margin-left:8px; }

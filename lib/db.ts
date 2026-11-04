@@ -28,6 +28,9 @@ async function ready() {
       unique (advertiser_id, month))`;
     await db`create table if not exists adops_naver_sa (
       customer_id text primary key, name text not null, sealed text not null, created_at timestamptz not null default now())`;
+    await db`create table if not exists adops_cache (
+      key text primary key, value jsonb not null, expires_at timestamptz, updated_at timestamptz not null default now())`;
+    await db`alter table adops_cache enable row level security`;
     // 브라우저에서 직접 접근하지 못하도록 RLS를 켜 둔다 (서버는 service 연결로 접근).
     await db`alter table adops_advertisers enable row level security`;
     await db`alter table adops_mixes enable row level security`;
@@ -96,3 +99,5 @@ export async function deleteNaverSa(customerId: string) {
   const db = await ready();
   await db`delete from adops_naver_sa where customer_id = ${customerId}`;
 }
+
+export async function sqlForCache() { return ready(); }
