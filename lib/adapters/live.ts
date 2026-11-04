@@ -235,8 +235,18 @@ async function gfaGet(path: string, params: Record<string, string> = {}) {
   if (response.status === 401) response = await call(await gfaToken(true));
   const text = await response.text();
   let body: any; try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
-  if (!response.ok) throw new Error(body?.message || body?.title || body?.error || `${response.status} ${response.statusText}`);
+  if (!response.ok) {
+    const detail = [body?.message, body?.title, body?.detail, body?.error].find((v) => typeof v === "string") || JSON.stringify(body).slice(0, 300);
+    throw new Error(`${detail} (HTTP ${response.status})`);
+  }
   return body;
+}
+// 과거 성과(past) API는 어제까지만 조회되므로, 이번 달 1일 ~ 어제 범위를 쓴다. 1일이면 조회하지 않는다.
+function gfaPastRange() {
+  const { since, until } = monthRange();
+  const y = new Date(`${until}T00:00:00Z`); y.setUTCDate(y.getUTCDate() - 1);
+  const yesterday = y.toISOString().slice(0, 10);
+  return yesterday < since ? null : { startDate: since, endDate: yesterday, timeUnit: "daily" };
 }
 const gfaList = (body: any): any[] => Array.isArray(body) ? body : body?.content || body?.rows || body?.data || body?.items || [];
 async function gfaAccounts(): Promise<AdAccount[]> {
@@ -279,7 +289,7 @@ const gfaStatus = (row: any): EntityStatus => {
 };
 async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await gfaAccounts();
-  const { since, until } = monthRange();
+  const range = gfaPastRange();
   return settleAccounts(accounts, async (account) => {
     const base = `/adAccounts/${account.id}`;
     const campaigns: any[] = [];
@@ -289,12 +299,12 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       if (items.length < 100) break;
     }
     // 일반 캠페인은 애드셋 단위, 애드부스트는 캠페인 단위로 성과가 나오므로 시트 스크립트와 같은 방식으로 합산한다.
-    const range = { startDate: since, endDate: until, timeUnit: "daily" };
+    const fetchRows = (path: string) => range ? gfaPaged(`${base}${path}`, range).catch(() => [] as any[]) : Promise.resolve([] as any[]);
     const [perfSets, convSets, perfCamps, convCamps] = await Promise.all([
-      gfaPaged(`${base}/performance/past/adSets`, range).catch(() => []),
-      gfaPaged(`${base}/performance/conversion/past/adSets`, range).catch(() => []),
-      gfaPaged(`${base}/performance/past/campaigns`, range).catch(() => []),
-      gfaPaged(`${base}/performance/conversion/past/campaigns`, range).catch(() => []),
+      fetchRows("/performance/past/adSets"),
+      fetchRows("/performance/conversion/past/adSets"),
+      fetchRows("/performance/past/campaigns"),
+      fetchRows("/performance/conversion/past/campaigns"),
     ]);
     const stats = new Map<string, { spend: number; conversions: number; revenue: number }>();
     const bucket = (no: unknown) => { const key = String(no ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, conversions: 0, revenue: 0 }); return stats.get(key)!; };
@@ -316,8 +326,7 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
 
 // TEMP: GFA 응답 구조 진단용 (확인 후 제거)
 export async function debugGfa(account: string) {
-  const { since, until } = monthRange();
-  const range = { startDate: since, endDate: until, timeUnit: "daily", limit: "5" };
+  const range = { ...(gfaPastRange() || { startDate: "", endDate: "", timeUnit: "daily" }), limit: "5" };
   const probe = async (path: string, params: Record<string, string>) => {
     try { const body = await gfaGet(path, params); return { keys: Object.keys(body || {}), sample: gfaList(body).slice(0, 2), next: body?.next ?? null }; }
     catch (error) { return { error: error instanceof Error ? error.message : String(error) }; }
