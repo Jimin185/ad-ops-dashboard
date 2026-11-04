@@ -1,5 +1,6 @@
 import { getAdapter } from "@/lib/adapters";
 import { assertMediaScope, executeMediaStep, getDailyReport } from "@/lib/adapters/live";
+import { keywordStats, searchContent, searchTrend, shoppingInsight, type ContentType, type TrendGroup } from "@/lib/market";
 import { sanitizeMix, type MediaMix } from "@/lib/mix";
 import { createPendingAction } from "@/lib/pending";
 import type { Channel, ChangeOperation, EntityType, PendingAction } from "@/lib/types";
@@ -159,6 +160,57 @@ export const assistantTools = [
     },
   },
   {
+    name: "market_keywords",
+    description: "네이버 키워드도구: 키워드(최대 5개)의 연관 키워드와 월간 검색수(PC/모바일), 월평균 클릭수, CTR, 경쟁도를 조회합니다. 키워드 확장·시장 규모 파악에 씁니다.",
+    strict: true,
+    input_schema: { type: "object", properties: { keywords: { type: "array", items: { type: "string" } } }, required: ["keywords"], additionalProperties: false },
+  },
+  {
+    name: "market_trend",
+    description: "네이버 검색어 트렌드: 키워드 그룹(최대 5개)의 기간별 상대 검색량(최대값=100)을 비교합니다. 시즌성·경쟁 브랜드 관심도 비교에 씁니다.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        groups: { type: "array", items: { type: "object", properties: { name: { type: "string" }, keywords: { type: "array", items: { type: "string" } } }, required: ["name", "keywords"], additionalProperties: false } },
+        startDate: { type: "string", description: "YYYY-MM-DD (2016-01-01 이후)" },
+        endDate: { type: "string", description: "YYYY-MM-DD" },
+        timeUnit: { type: "string", enum: ["date", "week", "month"] },
+      },
+      required: ["groups", "startDate", "endDate", "timeUnit"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "market_content",
+    description: "네이버 뉴스·블로그·카페 검색 결과(제목·요약·링크·날짜)를 가져옵니다. 시장 이슈, 소비자 반응, 경쟁사 동향 파악에 씁니다.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["news", "blog", "cafearticle"] },
+        query: { type: "string" },
+        sort: { type: "string", enum: ["sim", "date"] },
+      },
+      required: ["type", "query", "sort"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "market_shopping",
+    description: "네이버 쇼핑인사이트: 쇼핑 카테고리(최대 3개)의 기간별 클릭 추이(최대값=100). 카테고리 ID 예: 50000000 패션의류, 50000001 패션잡화, 50000002 화장품/미용, 50000003 디지털/가전, 50000004 가구/인테리어, 50000005 출산/육아, 50000006 식품, 50000007 스포츠/레저, 50000008 생활/건강, 50000009 여가/생활편의.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        categories: { type: "array", items: { type: "object", properties: { name: { type: "string" }, id: { type: "string" } }, required: ["name", "id"], additionalProperties: false } },
+        startDate: { type: "string" }, endDate: { type: "string" }, timeUnit: { type: "string", enum: ["date", "week", "month"] },
+      },
+      required: ["categories", "startDate", "endDate", "timeUnit"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "update_budget",
     description: "캠페인 또는 광고그룹의 일예산 변경안을 생성합니다. 실제 변경은 사용자의 별도 승인이 필요합니다.",
     strict: true,
@@ -256,6 +308,10 @@ export async function executeAssistantTool(name: string, input: ToolInput, ctx: 
       steps.map((step, i) => ({ targetId: `${i}`, targetName: `${i + 1}. ${step.note}`, field: `${step.method} ${step.channel}`, before: step.path, after: step.body === undefined ? "" : JSON.stringify(step.body).slice(0, 600) })));
     return { result: { status: "pending_user_confirmation", steps: steps.length, pendingId: pending.id }, pending };
   }
+  if (name === "market_keywords") return { result: await keywordStats((input.keywords as string[]) || []) };
+  if (name === "market_trend") return { result: await searchTrend((input.groups as TrendGroup[]) || [], String(input.startDate), String(input.endDate), input.timeUnit as "month") };
+  if (name === "market_content") return { result: await searchContent(input.type as ContentType, String(input.query), 10, input.sort as "sim") };
+  if (name === "market_shopping") return { result: await shoppingInsight((input.categories as Array<{ name: string; id: string }>) || [], String(input.startDate), String(input.endDate), input.timeUnit as "month") };
   if (name === "get_report") {
     if (!ctx.accountKeys.length) return { result: { error: "선택한 광고주에 매핑된 계정이 없습니다." } };
     const report = await getDailyReport(ctx.accountKeys, String(input.since), String(input.until));

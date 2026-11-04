@@ -31,6 +31,18 @@ async function ready() {
     await db`create table if not exists adops_cache (
       key text primary key, value jsonb not null, expires_at timestamptz, updated_at timestamptz not null default now())`;
     await db`alter table adops_cache enable row level security`;
+    await db`create table if not exists adops_monthly (
+      channel text not null, account_id text not null, month text not null, campaign_id text not null,
+      campaign_name text not null default '', product text not null default '', imp bigint not null default 0, clk bigint not null default 0,
+      cost double precision not null default 0, conv double precision not null default 0, revenue double precision not null default 0,
+      updated_at timestamptz not null default now(), primary key (channel, account_id, month, campaign_id))`;
+    await db`create table if not exists adops_monthly_done (channel text not null, account_id text not null, month text not null, fetched_at timestamptz not null default now(), primary key (channel, account_id, month))`;
+    await db`create table if not exists adops_board (
+      id text primary key, author text not null, advertiser text not null default '', channel text not null default '', product text not null default '',
+      title text not null, body text not null default '', metrics jsonb, created_at timestamptz not null default now())`;
+    await db`alter table adops_monthly enable row level security`;
+    await db`alter table adops_monthly_done enable row level security`;
+    await db`alter table adops_board enable row level security`;
     // 브라우저에서 직접 접근하지 못하도록 RLS를 켜 둔다 (서버는 service 연결로 접근).
     await db`alter table adops_advertisers enable row level security`;
     await db`alter table adops_mixes enable row level security`;
@@ -101,3 +113,5 @@ export async function deleteNaverSa(customerId: string) {
 }
 
 export async function sqlForCache() { return ready(); }
+
+export async function dbReady() { return ready(); }

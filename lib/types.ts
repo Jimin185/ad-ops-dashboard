@@ -30,6 +30,8 @@ export type Campaign = {
   active?: boolean;
   /** 매체 원본 상태값 (예: ACTIVE, PAUSED, ENDED, RUNNABLE) */
   rawStatus?: string;
+  /** 광고상품 (예: 파워링크, 쇼핑검색, PMax, 판매 목표) */
+  product?: string;
 };
 
 export type AdGroup = {
@@ -118,6 +120,7 @@ export type CreativeRow = {
   id: string;
   channel: Channel;
   accountId: string;
+  campaignId?: string;
   name: string;
   campaignName?: string;
   groupName?: string;

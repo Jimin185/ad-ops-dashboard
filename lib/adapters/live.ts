@@ -67,7 +67,7 @@ async function naverSigned(key: NaverKey, method: string, path: string, body?: u
   });
 }
 
-async function naverRequest(method: string, path: string, body?: unknown, customerId?: string) {
+export async function naverRequest(method: string, path: string, body?: unknown, customerId?: string) {
   return naverSigned(naverKeyFor(customerId), method, path, body);
 }
 
@@ -110,7 +110,7 @@ async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
       return { id: packed("naver_sa", account.id, row.nccCampaignId), channel: "naver_sa" as const, name: row.name,
         dailyBudget: num(row.dailyBudget), status: (row.userLock ? "off" : "on") as EntityStatus, spend, conversions: Math.round(num(s.ccnt)),
         roas: spend ? Math.round(num(s.convAmt) / spend * 100) : 0, accountId: account.id, accountName: account.name,
-        active: !row.userLock && row.status === "ELIGIBLE", rawStatus: row.status };
+        active: !row.userLock && row.status === "ELIGIBLE", rawStatus: row.status, product: productOf(row.campaignTp) };
     });
   });
 }
@@ -179,7 +179,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const { since, until } = monthRange();
   return settleAccounts(accounts, async (account) => {
     const body = await metaGet(`act_${account.id}/campaigns`, {
-      fields: `id,name,status,effective_status,stop_time,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
+      fields: `id,name,status,effective_status,stop_time,objective,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
       limit: "500",
     });
     return (body.data || []).filter((row: any) => includeOff || row.status === "ACTIVE").map((row: any) => {
@@ -190,7 +190,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / 100,
         status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
         accountId: account.id, accountName: account.name,
-        active: row.effective_status === "ACTIVE" && (!row.stop_time || new Date(row.stop_time).getTime() > Date.now()), rawStatus: row.effective_status || row.status };
+        active: row.effective_status === "ACTIVE" && (!row.stop_time || new Date(row.stop_time).getTime() > Date.now()), rawStatus: row.effective_status || row.status, product: productOf(row.objective) };
     });
   });
 }
@@ -229,14 +229,14 @@ async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await googleAccounts();
   return settleAccounts(accounts, async (account) => {
     const status = includeOff ? "campaign.status != 'REMOVED'" : "campaign.status = 'ENABLED'";
-    const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
+    const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status, campaign.advertising_channel_type, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
     return rows.map((row: any) => {
       const spend = num(row.metrics?.costMicros) / 1_000_000;
       return { id: packed("google_ads", account.id, String(row.campaign.id)), channel: "google_ads" as const, name: row.campaign.name,
         dailyBudget: num(row.campaignBudget?.amountMicros) / 1_000_000, status: asStatus(row.campaign.status), spend,
         conversions: Math.round(num(row.metrics?.conversions)), roas: spend ? Math.round(num(row.metrics?.conversionsValue) / spend * 100) : 0,
         accountId: account.id, accountName: account.name,
-        active: row.campaign.status === "ENABLED" && !["ENDED", "SUSPENDED", "NONE"].includes(row.campaign.servingStatus), rawStatus: row.campaign.servingStatus || row.campaign.status };
+        active: row.campaign.status === "ENABLED" && !["ENDED", "SUSPENDED", "NONE"].includes(row.campaign.servingStatus), rawStatus: row.campaign.servingStatus || row.campaign.status, product: productOf(row.campaign.advertisingChannelType) };
     });
   });
 }
@@ -356,7 +356,7 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       return { id: packed("naver_gfa", account.id, id), channel: "naver_gfa" as const, name: row.name || `캠페인 ${id}`,
         dailyBudget: num(row.dailyBudget ?? row.budget?.dailyBudget ?? row.budgetAmount), status: gfaStatus(row), spend: s.spend,
         conversions: Math.round(s.conversions), roas: s.spend ? Math.round(s.revenue / s.spend * 100) : 0, accountId: account.id, accountName: account.name,
-        active: gfaStatus(row) === "on" && !row.deleted && !["COMPLETED", "FINISHED", "ENDED", "DELETED", "STOPPED", "EXPIRED"].includes(String(row.status || "").toUpperCase()), rawStatus: row.status };
+        active: gfaStatus(row) === "on" && !row.deleted && !["COMPLETED", "FINISHED", "ENDED", "DELETED", "STOPPED", "EXPIRED"].includes(String(row.status || "").toUpperCase()), rawStatus: row.status, product: productOf(row.objective) };
     }).filter((row) => includeOff || row.status === "on" || row.spend > 0);
   });
 }
@@ -508,7 +508,7 @@ export { eachDate };
 async function metaCreatives(accountId: string, since: string, until: string): Promise<CreativeRow[]> {
   const insights = await metaPaged(`act_${accountId}/insights`, {
     level: "ad", time_range: JSON.stringify({ since, until }),
-    fields: "ad_id,ad_name,adset_name,campaign_name,spend,impressions,clicks,actions,action_values",
+    fields: "ad_id,ad_name,adset_name,campaign_id,campaign_name,spend,impressions,clicks,actions,action_values",
   });
   const top = insights.filter((row: any) => num(row.spend) > 0).sort((a: any, b: any) => num(b.spend) - num(a.spend)).slice(0, 60);
   const details: Record<string, any> = {};
@@ -521,7 +521,7 @@ async function metaCreatives(accountId: string, since: string, until: string): P
   return top.map((row: any) => {
     const creative = details[row.ad_id]?.creative || {};
     const link = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
-    return { id: row.ad_id, channel: "meta" as const, accountId, name: row.ad_name, campaignName: row.campaign_name, groupName: row.adset_name,
+    return { id: row.ad_id, channel: "meta" as const, accountId, campaignId: packed("meta", accountId, String(row.campaign_id)), name: row.ad_name, campaignName: row.campaign_name, groupName: row.adset_name,
       imageUrl: creative.image_url || link.picture || link.image_url || creative.thumbnail_url, headline: creative.title || link.name || link.title, body: creative.body || link.message,
       status: details[row.ad_id]?.effective_status, spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
       conversions: metaPick(row.actions), revenue: metaPick(row.action_values) };
@@ -544,13 +544,14 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
   ]) : [[], []];
   const stats = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; revenue: number }>();
   const stat = (no: unknown) => { const key = String(no ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 }); return stats.get(key)!; };
-  for (const row of perf) { const st = stat(row.creativeNo ?? row.adNo); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
+  const creativeCampaign = new Map<string, string>();
+  for (const row of perf) { creativeCampaign.set(String(row.creativeNo ?? row.adNo), String(row.campaignNo ?? "")); const st = stat(row.creativeNo ?? row.adNo); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
   for (const row of conv) if (row.convType === "PURCHASE") { const st = stat(row.creativeNo ?? row.adNo); st.conversions += num(row.convCount); st.revenue += num(row.convSales); }
   return creatives.map((c: any) => {
     const id = String(c.no ?? c.creativeNo ?? c.id);
     const st = stats.get(id) || { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 };
     const media = c.medias?.[0] || c.media || c.images?.[0] || c.image || {};
-    return { id, channel: "naver_gfa" as const, accountId, name: c.name || `소재 ${id}`, campaignName: c.campaignName, groupName: c.adSetName,
+    return { id, channel: "naver_gfa" as const, accountId, campaignId: creativeCampaign.get(id) ? packed("naver_gfa", accountId, creativeCampaign.get(id)!) : undefined, name: c.name || `소재 ${id}`, campaignName: c.campaignName, groupName: c.adSetName,
       imageUrl: media.url || media.imageUrl || c.imageUrl || c.thumbnailUrl || c.previewUrl, headline: c.title || c.headline, body: c.description || c.body,
       status: c.activated === undefined ? c.status : (c.activated ? "ON" : "OFF"), ...st };
   }).filter((row) => row.spend > 0).sort((a, b) => b.spend - a.spend).slice(0, 60);
@@ -809,6 +810,84 @@ export async function executeMediaPlan(steps: MediaStep[], allowedKeys: string[]
     }
   }
   return { success: true, completed: steps.length, results };
+}
+
+// ---- 월별 적재 (연초~전월, 캠페인 단위) ----
+export type MonthlyRow = { channel: Channel; accountId: string; month: string; campaignId: string; campaignName: string; product: string; imp: number; clk: number; cost: number; conv: number; revenue: number };
+const monthBounds = (month: string) => { const [y, m] = month.split("-").map(Number); return { since: `${month}-01`, until: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) }; };
+
+/** 한 계정의 여러 달 캠페인 성과. Google·Meta는 한 번에, GFA·SA는 달마다 조회한다. */
+export async function fetchMonthly(channel: Channel, accountId: string, months: string[]): Promise<MonthlyRow[]> {
+  if (!months.length) return [];
+  const since = monthBounds(months[0]).since, until = monthBounds(months[months.length - 1]).until;
+  const base = { channel, accountId };
+  if (channel === "google_ads") {
+    const rows = await googleSearch(accountId, `SELECT segments.month, campaign.id, campaign.name, campaign.advertising_channel_type, metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE segments.date BETWEEN '${since}' AND '${until}' AND metrics.impressions > 0`);
+    return rows.map((r: any) => ({ ...base, month: String(r.segments.month).slice(0, 7), campaignId: String(r.campaign.id), campaignName: r.campaign.name, product: productOf(r.campaign.advertisingChannelType) || "", imp: num(r.metrics.impressions), clk: num(r.metrics.clicks), cost: num(r.metrics.costMicros) / 1e6, conv: num(r.metrics.conversions), revenue: num(r.metrics.conversionsValue) }));
+  }
+  if (channel === "meta") {
+    const rows = await metaPaged(`act_${accountId}/insights`, { level: "campaign", time_increment: "monthly", time_range: JSON.stringify({ since, until }), fields: "campaign_id,campaign_name,objective,spend,impressions,clicks,actions,action_values" });
+    return rows.map((r: any) => ({ ...base, month: String(r.date_start).slice(0, 7), campaignId: String(r.campaign_id), campaignName: r.campaign_name, product: productOf(r.objective) || "", imp: num(r.impressions), clk: num(r.clicks), cost: num(r.spend), conv: metaPick(r.actions), revenue: metaPick(r.action_values) }));
+  }
+  const out: MonthlyRow[] = [];
+  if (channel === "naver_gfa") {
+    const campaigns: any[] = [];
+    for (let page = 0; page < 50; page++) { const items = gfaList(await gfaGet(`/adAccounts/${accountId}/campaigns`, { page: String(page), size: "100" })); campaigns.push(...items); if (items.length < 100) break; }
+    const info = new Map(campaigns.map((c) => [String(c.no), c]));
+    for (const month of months) {
+      const range = { startDate: monthBounds(month).since, endDate: monthBounds(month).until, timeUnit: "monthly" };
+      const fetchRows = (path: string) => gfaPaged(`/adAccounts/${accountId}${path}`, range).catch(() => gfaPaged(`/adAccounts/${accountId}${path}`, { ...range, timeUnit: "daily" }));
+      const [sets, setConv, camps, campConv] = await Promise.all(["/performance/past/adSets", "/performance/conversion/past/adSets", "/performance/past/campaigns", "/performance/conversion/past/campaigns"].map((p) => fetchRows(p).catch(() => [] as any[])));
+      const inSets = new Set([...sets, ...setConv].map((r) => String(r.campaignNo ?? "")));
+      const agg = new Map<string, MonthlyRow>();
+      const row = (no: string) => { if (!agg.has(no)) { const c = info.get(no); agg.set(no, { ...base, month, campaignId: no, campaignName: c?.name || `캠페인 ${no}`, product: productOf(c?.objective) || "", imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0 }); } return agg.get(no)!; };
+      const perf = (r: any) => { const x = row(String(r.campaignNo ?? "")); x.imp += num(r.impCount); x.clk += num(r.clickCount); x.cost += num(r.sales); };
+      const conv = (r: any) => { if (r.convType === "PURCHASE") { const x = row(String(r.campaignNo ?? "")); x.conv += num(r.convCount); x.revenue += num(r.convSales); } };
+      sets.forEach(perf); camps.filter((r) => !inSets.has(String(r.campaignNo ?? ""))).forEach(perf);
+      setConv.forEach(conv); campConv.filter((r) => !inSets.has(String(r.campaignNo ?? ""))).forEach(conv);
+      out.push(...[...agg.values()].filter((r) => r.imp || r.cost));
+    }
+    return out;
+  }
+  // naver_sa: 캠페인 합계를 달마다 (전환매출은 SA 통계 기준 전체 전환)
+  const campaigns = await naverRequest("GET", "/ncc/campaigns", undefined, accountId) as any[];
+  const info = new Map(campaigns.map((c) => [c.nccCampaignId, c]));
+  for (const month of months) {
+    const stats = await naverStats(accountId, campaigns.map((c) => c.nccCampaignId), monthBounds(month).since, monthBounds(month).until, false);
+    for (const s of stats) {
+      if (!num(s.impCnt) && !num(s.salesAmt)) continue;
+      const c = info.get(s.id);
+      out.push({ ...base, month, campaignId: s.id, campaignName: c?.name || s.id, product: productOf(c?.campaignTp) || "", imp: num(s.impCnt), clk: num(s.clkCnt), cost: num(s.salesAmt), conv: num(s.ccnt), revenue: num(s.convAmt) });
+    }
+  }
+  return out;
+}
+
+// 광고상품 이름 (채널별 캠페인 유형/목표)
+export const PRODUCT_LABEL: Record<string, string> = {
+  WEB_SITE: "파워링크", SHOPPING: "쇼핑검색", BRAND_SEARCH: "브랜드검색", POWER_CONTENTS: "파워콘텐츠", PLACE: "플레이스",
+  SEARCH: "검색", PERFORMANCE_MAX: "PMax", DISPLAY: "디스플레이", VIDEO: "동영상(유튜브)", DEMAND_GEN: "디맨드젠", MULTI_CHANNEL: "앱", SMART: "스마트",
+  OUTCOME_SALES: "판매", OUTCOME_LEADS: "잠재고객", OUTCOME_TRAFFIC: "트래픽", OUTCOME_AWARENESS: "인지도", OUTCOME_ENGAGEMENT: "참여", OUTCOME_APP_PROMOTION: "앱 홍보",
+  CONVERSIONS: "전환", LINK_CLICKS: "트래픽", REACH: "도달", BRAND_AWARENESS: "인지도", VIDEO_VIEWS: "동영상 조회", PRODUCT_CATALOG_SALES: "카탈로그 판매",
+  CONVERSION: "전환", CATALOG: "카탈로그", WEB_SITE_TRAFFIC: "웹사이트 트래픽", INSTALL_APP: "앱 설치", VIDEO_VIEW: "동영상 조회", AWARENESS: "인지도", SHOPPING_PROMOTION: "쇼핑 프로모션", ADVOOST_SHOPPING: "애드부스트 쇼핑", LEAD: "참여·잠재고객",
+};
+function productOf(value?: string) { return value ? (PRODUCT_LABEL[value] || value) : undefined; }
+
+/** 네이버 SA 비즈머니 잔액 (10분 캐시). GFA는 잔액 조회 API가 없다. */
+export async function getBizmoney(customerIds: string[]) {
+  return Promise.all(customerIds.map(async (id) => {
+    const key = `bizmoney:${id}`;
+    const cached = await cacheGet<{ bizmoney: number; budgetLock: boolean }>(key);
+    if (cached) return { customerId: id, ...cached.value, at: new Date(cached.updatedAt).toISOString() };
+    try {
+      const body = await naverRequest("GET", "/billing/bizmoney", undefined, id);
+      const value = { bizmoney: Math.round(num(body.bizmoney)), budgetLock: Boolean(body.budgetLock) };
+      await cacheSet(key, value, Date.now() + 10 * 60_000);
+      return { customerId: id, ...value, at: new Date().toISOString() };
+    } catch (error) {
+      return { customerId: id, error: error instanceof Error ? error.message : String(error) };
+    }
+  }));
 }
 
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
