@@ -576,6 +576,49 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
   return { since, until, rows, errors, fetchedAt: new Date(oldest).toISOString() };
 }
 
+// ---- 네이버 SA 대용량 리포트 (stat-reports: 비동기 생성 → 다운로드) ----
+export async function naverStatReport(customerId: string, reportTp: string, statDt: string, waitMs = 25_000): Promise<string[][] | "pending"> {
+  const key = naverKeyFor(customerId);
+  const job = await naverSigned(key, "POST", "/stat-reports", { reportTp, statDt: statDt.replace(/-/g, "") });
+  const jobId = job?.reportJobId;
+  if (!jobId) throw new Error(`리포트 요청 실패: ${JSON.stringify(job).slice(0, 200)}`);
+  const started = Date.now();
+  while (Date.now() - started < waitMs) {
+    const status = await naverSigned(key, "GET", `/stat-reports/${jobId}`);
+    if (status?.status === "BUILT" && status.downloadUrl) {
+      const timestamp = Date.now().toString();
+      const signature = crypto.createHmac("sha256", key.secret).update(`${timestamp}.GET./report-download`).digest("base64");
+      const res = await fetch(status.downloadUrl, { headers: { "X-Timestamp": timestamp, "X-API-KEY": key.apiKey, "X-Customer": key.customerId, "X-Signature": signature }, cache: "no-store" });
+      const text = await res.text();
+      if (!text.trim() || text.trim().startsWith("{")) return [];
+      return text.trim().split("\n").map((line) => line.split("\t"));
+    }
+    if (status?.status === "NONE" || status?.status === "ERROR") return [];
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return "pending";
+}
+
+// TEMP: 네이버 SA 리포트 컬럼 구조 확인용
+export async function debugSaReports(customerId: string, statDt: string) {
+  const out: Record<string, unknown> = {};
+  for (const tp of ["AD", "AD_CONVERSION", "SHOPPINGKEYWORD_DETAIL", "SHOPPINGKEYWORD_CONVERSION_DETAIL", "AD_DETAIL", "EXPKEYWORD"]) {
+    try { const rows = await naverStatReport(customerId, tp, statDt, 20_000); out[tp] = rows === "pending" ? "pending" : { count: rows.length, sample: rows.slice(0, 3) }; }
+    catch (error) { out[tp] = { error: error instanceof Error ? error.message : String(error) }; }
+  }
+  const campaigns = await naverRequest("GET", "/ncc/campaigns", undefined, customerId) as any[];
+  out.campaignTypes = [...new Set(campaigns.map((c) => c.campaignTp))];
+  for (const tp of ["WEB_SITE", "SHOPPING"]) {
+    const camp = campaigns.find((c) => c.campaignTp === tp && c.status === "ELIGIBLE");
+    if (!camp) continue;
+    const groups = await naverRequest("GET", `/ncc/adgroups?nccCampaignId=${camp.nccCampaignId}`, undefined, customerId) as any[];
+    const ads = groups[0] ? await naverRequest("GET", `/ncc/ads?nccAdgroupId=${groups[0].nccAdgroupId}`, undefined, customerId) as any[] : [];
+    out[`ad_${tp}`] = JSON.stringify(ads[0] || null).slice(0, 1500);
+    out[`group_${tp}`] = JSON.stringify(groups[0] || null).slice(0, 600);
+  }
+  return out;
+}
+
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
 export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
