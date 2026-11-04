@@ -1,7 +1,12 @@
+import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import { getAdapter } from "@/lib/adapters";
 import { verifyPendingAction } from "@/lib/pending";
 
 export async function POST(request: Request) {
+  return withNaverSaAccounts(request, () => handle(request));
+}
+
+async function handle(request: Request) {
   try {
     const { token } = (await request.json()) as { token?: string };
     if (!token) return Response.json({ error: "승인 토큰이 없습니다." }, { status: 400 });

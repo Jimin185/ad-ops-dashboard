@@ -1,9 +1,14 @@
+import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import { getAdapter } from "@/lib/adapters";
 import type { Channel } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  return withNaverSaAccounts(request, () => handle(request));
+}
+
+async function handle(request: Request) {
   try {
     const params = new URL(request.url).searchParams;
     const channel = params.get("channel") as Channel | null;

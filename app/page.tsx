@@ -6,6 +6,25 @@ import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, Connec
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[] };
 type Advertiser = { id: string; name: string; accountKeys: string[] };
 
+type RegisteredNaverSa = { id: string; name: string; token: string };
+const NAVER_SA_STORAGE = "adops-naver-sa";
+
+function loadRegisteredNaverSa(): RegisteredNaverSa[] {
+  try { return JSON.parse(localStorage.getItem(NAVER_SA_STORAGE) || "[]"); } catch { return []; }
+}
+
+// 대시보드에서 등록한 네이버 SA 계정(암호화 토큰)을 모든 API 요청에 함께 보낸다.
+function apiFetch(url: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  const tokens = loadRegisteredNaverSa().map((item) => item.token);
+  if (tokens.length) headers.set("x-naver-sa-accounts", JSON.stringify(tokens));
+  return fetch(url, { ...init, headers });
+}
+
+const mappingTabs: Array<{ key: "all" | Channel; label: string }> = [
+  { key: "all", label: "전체" }, { key: "naver_gfa", label: "네이버 GFA" }, { key: "google_ads", label: "Google Ads" }, { key: "meta", label: "Meta" }, { key: "naver_sa", label: "네이버 SA" },
+];
+
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
 const channelLabel = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" } as const;
 
@@ -34,7 +53,7 @@ function ConfirmCard({ action, onDone }: { action: PendingAction; onDone: (messa
 
   async function apply() {
     setState("loading");
-    const response = await fetch("/api/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: action.token }) });
+    const response = await apiFetch("/api/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: action.token }) });
     const data = await response.json();
     if (!response.ok) {
       setState("idle");
@@ -78,6 +97,11 @@ export default function Dashboard() {
   const [adgroups, setAdgroups] = useState<AdGroup[]>([]);
   const [adsByGroup, setAdsByGroup] = useState<Record<string, Ad[]>>({});
   const [detailError, setDetailError] = useState("");
+  const [mappingTab, setMappingTab] = useState<"all" | Channel>("all");
+  const [accountQuery, setAccountQuery] = useState("");
+  const [registeredSa, setRegisteredSa] = useState<RegisteredNaverSa[]>([]);
+  const [saForm, setSaForm] = useState({ name: "", customerId: "", apiKey: "", secretKey: "" });
+  const [saStatus, setSaStatus] = useState<{ state: "idle" | "saving" | "error" | "done"; message: string }>({ state: "idle", message: "" });
   const [chatOpen, setChatOpen] = useState(true);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -88,7 +112,7 @@ export default function Dashboard() {
   const refresh = useCallback(async () => {
     setLoading(true);
     setLoadError("");
-    const response = await fetch("/api/campaigns", { cache: "no-store" });
+    const response = await apiFetch("/api/campaigns", { cache: "no-store" });
     const data = await response.json();
     if (data.mode) setMode(data.mode);
     if (response.ok) {
@@ -101,11 +125,19 @@ export default function Dashboard() {
     setLoading(false);
   }, []);
 
+  const loadAccounts = useCallback(async () => {
+    const response = await apiFetch("/api/accounts", { cache: "no-store" });
+    const data = await response.json();
+    setAccounts(data.accounts || []);
+    setAccountErrors(data.errors || {});
+  }, []);
+
   useEffect(() => {
+    setRegisteredSa(loadRegisteredNaverSa());
     void refresh();
-    void fetch("/api/accounts", { cache: "no-store" }).then((response) => response.json()).then((data) => { setAccounts(data.accounts || []); setAccountErrors(data.errors || {}); });
+    void loadAccounts();
     try { setAdvertisers(JSON.parse(localStorage.getItem("adops-advertisers") || "[]")); } catch { setAdvertisers([]); }
-  }, [refresh]);
+  }, [refresh, loadAccounts]);
 
   useEffect(() => { localStorage.setItem("adops-advertisers", JSON.stringify(advertisers)); }, [advertisers]);
 
@@ -124,6 +156,42 @@ export default function Dashboard() {
     conversions: scopedCampaigns.reduce((sum, row) => sum + row.conversions, 0),
     active: scopedCampaigns.filter((row) => row.status === "on").length,
   }), [scopedCampaigns]);
+
+  // 계정 → 이미 매핑된 광고주 이름
+  const ownerByAccount = useMemo(() => {
+    const map = new Map<string, Advertiser>();
+    for (const advertiser of advertisers) for (const key of advertiser.accountKeys) if (!map.has(key)) map.set(key, advertiser);
+    return map;
+  }, [advertisers]);
+
+  const visibleAccounts = useMemo(() => {
+    const query = accountQuery.trim().toLowerCase();
+    return accounts.filter((account) => (mappingTab === "all" || account.channel === mappingTab)
+      && (!query || account.name.toLowerCase().includes(query) || account.id.includes(query)));
+  }, [accounts, mappingTab, accountQuery]);
+
+  function saveRegisteredSa(next: RegisteredNaverSa[]) {
+    setRegisteredSa(next);
+    try { localStorage.setItem(NAVER_SA_STORAGE, JSON.stringify(next)); } catch { /* 저장 불가 환경 */ }
+  }
+
+  async function registerNaverSa() {
+    setSaStatus({ state: "saving", message: "네이버 API로 키를 확인하는 중…" });
+    const response = await fetch("/api/naver-sa/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(saForm) });
+    const data = await response.json();
+    if (!response.ok) return setSaStatus({ state: "error", message: data.error || "등록에 실패했습니다." });
+    saveRegisteredSa([...loadRegisteredNaverSa().filter((item) => item.id !== data.account.id), { id: data.account.id, name: data.account.name, token: data.token }]);
+    setSaForm({ name: "", customerId: "", apiKey: "", secretKey: "" });
+    setSaStatus({ state: "done", message: `${data.account.name} 등록 완료 · 캠페인 ${data.campaignCount}개 확인` });
+    await Promise.all([loadAccounts(), refresh()]);
+  }
+
+  async function removeNaverSa(id: string) {
+    if (!window.confirm("이 네이버 SA 계정 등록을 삭제할까요? 매핑도 함께 해제됩니다.")) return;
+    saveRegisteredSa(loadRegisteredNaverSa().filter((item) => item.id !== id));
+    setAdvertisers((current) => current.map((advertiser) => ({ ...advertiser, accountKeys: advertiser.accountKeys.filter((key) => key !== `naver_sa:${id}`) })));
+    await Promise.all([loadAccounts(), refresh()]);
+  }
 
   function createAdvertiser() {
     const name = window.prompt("광고주 이름을 입력하세요.")?.trim();
@@ -144,21 +212,21 @@ export default function Dashboard() {
 
   async function openCampaign(campaign: Campaign) {
     setSelectedCampaign(campaign); setAdgroups([]); setAdsByGroup({}); setDetailError("");
-    const response = await fetch(`/api/entities?channel=${campaign.channel}&campaignId=${encodeURIComponent(campaign.id)}`);
+    const response = await apiFetch(`/api/entities?channel=${campaign.channel}&campaignId=${encodeURIComponent(campaign.id)}`);
     const data = await response.json();
     if (!response.ok) setDetailError(data.error || "광고그룹을 불러오지 못했습니다.");
     else setAdgroups(data.adgroups || []);
   }
 
   async function loadAds(group: AdGroup) {
-    const response = await fetch(`/api/entities?channel=${group.channel}&adgroupId=${encodeURIComponent(group.id)}`);
+    const response = await apiFetch(`/api/entities?channel=${group.channel}&adgroupId=${encodeURIComponent(group.id)}`);
     const data = await response.json();
     if (!response.ok) setDetailError(data.error || "소재를 불러오지 못했습니다.");
     else setAdsByGroup((current) => ({ ...current, [group.id]: data.ads || [] }));
   }
 
   async function planManual(operation: ChangeOperation) {
-    const response = await fetch("/api/manual/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(operation) });
+    const response = await apiFetch("/api/manual/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(operation) });
     const data = await response.json();
     if (!response.ok) return window.alert(data.error);
     setMessages((current) => [...current, { role: "assistant", content: "아래 변경 내용을 확인해 주세요.", pendingActions: [data.pendingAction] }]);
@@ -174,7 +242,7 @@ export default function Dashboard() {
     setSending(true);
     try {
       const history = next.map(({ role, content }) => ({ role, content }));
-      const response = await fetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history }) });
+      const response = await apiFetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history }) });
       const data = await response.json();
       setMessages((current) => [...current, { role: "assistant", content: response.ok ? data.message : data.error, pendingActions: data.pendingActions }]);
     } catch {
@@ -197,12 +265,44 @@ export default function Dashboard() {
 
   if (view === "mapping") return (
     <main>
-      <header><div><span className="eyebrow">ADMIN · ACCOUNT MAPPING</span><h1>광고계정 매핑</h1><p>관리자 계정에서 발견된 계정을 광고주별로 연결합니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
+      <header><div><span className="eyebrow">ADMIN · ACCOUNT MAPPING</span><h1>광고계정 매핑</h1><p>매체별 관리자 계정에서 발견된 광고계정을 광고주에 연결합니다. 다른 광고주에 연결된 계정은 선택할 수 없습니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
       <section className="mapping-panel">
-        <div className="mapping-toolbar"><select value={selectedAdvertiserId} onChange={(event) => setSelectedAdvertiserId(event.target.value)}><option value="">광고주 선택</option>{advertisers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="secondary" onClick={createAdvertiser}>+ 광고주</button></div>
-        <div className="account-list">{accounts.map((account) => { const checked = Boolean(selectedAdvertiser?.accountKeys.includes(`${account.channel}:${account.id}`)); return <label key={`${account.channel}:${account.id}`}><input type="checkbox" disabled={!selectedAdvertiser} checked={checked} onChange={() => selectedAdvertiser && toggleAccount(selectedAdvertiser.id, account)} /><span className={`channel ${account.channel}`}>{channelLabel[account.channel]}</span><b>{account.name}</b><small>{account.id}</small></label>; })}</div>
-        {Object.entries(accountErrors).map(([channel, message]) => <div className="connection-error" key={channel}><b>{channelLabel[channel as Channel]} 계정 조회 오류</b><span>{message}</span></div>)}
-        {!accounts.length && <div className="empty-state"><b>발견된 광고계정이 없습니다.</b><span>위 연결 상태의 오류와 환경변수를 먼저 확인해 주세요.</span></div>}
+        <div className="mapping-toolbar"><select value={selectedAdvertiserId} onChange={(event) => setSelectedAdvertiserId(event.target.value)}><option value="">광고주 선택</option>{advertisers.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.accountKeys.length})</option>)}</select><button className="secondary" onClick={createAdvertiser}>+ 광고주</button></div>
+
+        <nav className="channel-tabs">{mappingTabs.map((tab) => {
+          const count = tab.key === "all" ? accounts.length : accounts.filter((account) => account.channel === tab.key).length;
+          return <button key={tab.key} className={mappingTab === tab.key ? "active" : ""} onClick={() => setMappingTab(tab.key)}>{tab.label} <span className="tab-count">{count}</span></button>;
+        })}</nav>
+
+        {mappingTab === "naver_sa" && <div className="sa-register">
+          <div><b>네이버 SA 계정 직접 등록</b><span>검색광고 › 도구 › API 사용 관리에서 CUSTOMER_ID, 액세스 라이선스, 비밀키를 복사해 넣어주세요. 키는 네이버 API로 확인한 뒤 서버 키로 암호화해 이 브라우저에 저장됩니다.</span></div>
+          <div className="sa-form">
+            <input placeholder="계정 이름 (예: 데스커 SA)" value={saForm.name} onChange={(event) => setSaForm({ ...saForm, name: event.target.value })} />
+            <input placeholder="CUSTOMER_ID" inputMode="numeric" value={saForm.customerId} onChange={(event) => setSaForm({ ...saForm, customerId: event.target.value })} />
+            <input placeholder="액세스 라이선스 (API Key)" value={saForm.apiKey} onChange={(event) => setSaForm({ ...saForm, apiKey: event.target.value })} autoComplete="off" />
+            <input placeholder="비밀키 (Secret Key)" type="password" value={saForm.secretKey} onChange={(event) => setSaForm({ ...saForm, secretKey: event.target.value })} autoComplete="new-password" />
+            <button className="primary" disabled={saStatus.state === "saving" || !saForm.customerId || !saForm.apiKey || !saForm.secretKey} onClick={() => void registerNaverSa()}>{saStatus.state === "saving" ? "확인 중…" : "등록"}</button>
+          </div>
+          {saStatus.message && <small className={`sa-status ${saStatus.state}`}>{saStatus.message}</small>}
+          {!!registeredSa.length && <div className="sa-registered">{registeredSa.map((item) => <span key={item.id}>{item.name} <small>{item.id}</small><button aria-label={`${item.name} 삭제`} onClick={() => void removeNaverSa(item.id)}>×</button></span>)}</div>}
+        </div>}
+
+        <input className="account-search" type="search" placeholder="계정 이름 또는 ID로 검색" value={accountQuery} onChange={(event) => setAccountQuery(event.target.value)} />
+
+        <div className="account-list">{visibleAccounts.map((account) => {
+          const key = `${account.channel}:${account.id}`;
+          const owner = ownerByAccount.get(key);
+          const mappedElsewhere = Boolean(owner && owner.id !== selectedAdvertiser?.id);
+          const checked = Boolean(selectedAdvertiser?.accountKeys.includes(key));
+          return <label key={key} className={mappedElsewhere ? "taken" : ""}>
+            <input type="checkbox" disabled={!selectedAdvertiser || mappedElsewhere} checked={checked} onChange={() => selectedAdvertiser && toggleAccount(selectedAdvertiser.id, account)} />
+            <span className={`channel ${account.channel}`}>{channelLabel[account.channel]}</span>
+            <b>{account.name}{mappedElsewhere && <em className="owner-tag">{owner!.name}에 매핑됨</em>}</b>
+            <small>{account.id}</small>
+          </label>;
+        })}</div>
+        {!visibleAccounts.length && <div className="empty-state"><b>{accountQuery ? "검색 결과가 없습니다." : mappingTab === "naver_sa" ? "등록된 네이버 SA 계정이 없습니다." : "발견된 광고계정이 없습니다."}</b><span>{accountQuery ? "다른 이름이나 ID로 검색해 보세요." : mappingTab === "naver_sa" ? "위에서 계정을 등록해 주세요." : "연결 상태의 오류와 환경변수를 확인해 주세요."}</span></div>}
+        {Object.entries(accountErrors).filter(([channel]) => mappingTab === "all" || mappingTab === channel).map(([channel, message]) => <div className="connection-error" key={channel}><b>{channelLabel[channel as Channel]} 계정 조회 오류</b><span>{message}</span></div>)}
         {selectedAdvertiser && <button className="primary" onClick={() => setView("dashboard")}>{selectedAdvertiser.name} 대시보드 열기</button>}
       </section>
     </main>

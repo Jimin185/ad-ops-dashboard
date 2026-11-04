@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { registeredNaverSa } from "@/lib/naver-sa-registry";
 import type { Ad, AdAccount, AdGroup, Campaign, Channel, ChangeOperation, ConnectionStatus, EntityStatus, EntityType, StatsRow } from "@/lib/types";
 
 const META_VERSION = process.env.META_API_VERSION || "v25.0";
@@ -42,33 +43,56 @@ function naverCredentials() {
   return apiKey && secret && customerId ? { apiKey, secret, customerId: cleanId(customerId) } : null;
 }
 
-async function naverRequest(method: string, path: string, body?: unknown, customerId?: string) {
+type NaverKey = { apiKey: string; secret: string; customerId: string };
+
+// 대시보드에서 등록한 계정이면 그 계정의 키를, 아니면 환경변수(대행사) 키를 쓴다.
+function naverKeyFor(customerId?: string): NaverKey {
+  const id = customerId ? cleanId(customerId) : undefined;
+  const registered = registeredNaverSa().find((item) => cleanId(item.customerId) === id);
+  if (registered) return { apiKey: registered.apiKey, secret: registered.secret, customerId: cleanId(registered.customerId) };
   const credentials = naverCredentials();
-  if (!credentials) throw new Error("네이버 SA 인증정보가 없습니다.");
+  if (!credentials) throw new Error(id ? `네이버 SA 계정 ${id}의 인증정보가 없습니다. 계정 매핑 > 네이버 SA에서 등록해 주세요.` : "네이버 SA 인증정보가 없습니다.");
+  return { ...credentials, customerId: id || credentials.customerId };
+}
+
+async function naverSigned(key: NaverKey, method: string, path: string, body?: unknown) {
   const timestamp = Date.now().toString();
   // 네이버 SA 서명은 쿼리스트링을 제외한 URI로 생성해야 한다.
-  const signature = crypto.createHmac("sha256", credentials.secret).update(`${timestamp}.${method}.${path.split("?")[0]}`).digest("base64");
+  const signature = crypto.createHmac("sha256", key.secret).update(`${timestamp}.${method}.${path.split("?")[0]}`).digest("base64");
   return jsonFetch(`https://api.searchad.naver.com${path}`, {
     method,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Timestamp": timestamp,
-      "X-API-KEY": credentials.apiKey,
-      "X-Customer": customerId ? cleanId(customerId) : credentials.customerId,
-      "X-Signature": signature,
-    },
+    headers: { "Content-Type": "application/json", "X-Timestamp": timestamp, "X-API-KEY": key.apiKey, "X-Customer": key.customerId, "X-Signature": signature },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
 
+async function naverRequest(method: string, path: string, body?: unknown, customerId?: string) {
+  return naverSigned(naverKeyFor(customerId), method, path, body);
+}
+
+/** 등록 전에 키가 맞는지 확인한다. 캠페인 수를 돌려준다. */
+export async function verifyNaverSaCredential(credential: { customerId: string; apiKey: string; secret: string }) {
+  const rows = await naverSigned({ apiKey: credential.apiKey.trim(), secret: credential.secret.trim(), customerId: cleanId(credential.customerId) }, "GET", "/ncc/campaigns");
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
 async function naverAccounts(): Promise<AdAccount[]> {
+  const accounts: AdAccount[] = [];
   const credentials = naverCredentials();
-  if (!credentials) return [];
-  // 대행사(MCC) 계정이면 연결된 광고주 목록을 조회하고, 아니면 자기 계정만 사용한다.
-  let clients: any[] = [];
-  try { clients = await naverRequest("GET", "/customer-links?type=MYCLIENTS"); } catch { clients = []; }
-  const linked = (Array.isArray(clients) ? clients : []).map((row: any) => ({ id: String(row.clientCustomerId || ""), channel: "naver_sa" as const, name: row.clientLoginId ? `네이버 SA ${row.clientLoginId}` : `네이버 SA ${row.clientCustomerId}` })).filter((row) => row.id);
-  return linked.length ? linked : [{ id: credentials.customerId, channel: "naver_sa", name: `네이버 SA ${credentials.customerId}` }];
+  if (credentials) {
+    // 대행사(MCC) 계정이면 연결된 광고주 목록을 조회하고, 아니면 자기 계정만 사용한다.
+    let clients: any[] = [];
+    try { clients = await naverRequest("GET", "/customer-links?type=MYCLIENTS"); } catch { clients = []; }
+    const linked = (Array.isArray(clients) ? clients : []).map((row: any) => ({ id: String(row.clientCustomerId || ""), channel: "naver_sa" as const, name: row.clientLoginId ? `네이버 SA ${row.clientLoginId}` : `네이버 SA ${row.clientCustomerId}` })).filter((row) => row.id);
+    accounts.push(...(linked.length ? linked : [{ id: credentials.customerId, channel: "naver_sa" as const, name: `네이버 SA ${credentials.customerId}` }]));
+  }
+  for (const item of registeredNaverSa()) {
+    const id = cleanId(item.customerId);
+    const existing = accounts.find((row) => row.id === id);
+    if (existing) existing.name = item.name || existing.name;
+    else accounts.push({ id, channel: "naver_sa", name: item.name || `네이버 SA ${id}` });
+  }
+  return accounts;
 }
 
 async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
@@ -345,7 +369,7 @@ export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors
 export async function getLiveSnapshot(includeOff = true): Promise<{ campaigns: Campaign[]; connections: ConnectionStatus[] }> {
   const missing = (...names: Array<string | [string, string]>) => names.filter((name) => Array.isArray(name) ? !env(name[0], name[1]) : !env(name)).map((name) => Array.isArray(name) ? `${name[0]} 또는 ${name[1]}` : name);
   const definitions: Array<{ channel: Channel; configured: boolean; missing: string[]; run?: () => Promise<Campaign[]>; unsupported?: string }> = [
-    { channel: "naver_sa", missing: missing("NAVER_SA_API_KEY", "NAVER_SA_SECRET_KEY", ["NAVER_SA_CUSTOMER_ID", "NAVER_SA_MANAGER_CUSTOMER_ID"]), configured: Boolean(naverCredentials()), run: () => naverCampaigns(includeOff) },
+    { channel: "naver_sa", missing: missing("NAVER_SA_API_KEY", "NAVER_SA_SECRET_KEY", ["NAVER_SA_CUSTOMER_ID", "NAVER_SA_MANAGER_CUSTOMER_ID"]), configured: Boolean(naverCredentials() || registeredNaverSa().length), run: () => naverCampaigns(includeOff) },
     { channel: "naver_gfa", missing: missing("NAVER_GFA_CLIENT_ID", "NAVER_GFA_REFRESH_TOKEN", ["NAVER_GFA_MANAGER_ACCOUNT_NO", "NAVER_GFA_MANAGER_ACCOUNT_ID"]), configured: Boolean(gfaConfig()), run: () => gfaCampaigns(includeOff) },
     { channel: "meta", missing: missing(["META_SYSTEM_USER_ACCESS_TOKEN", "META_ACCESS_TOKEN"]), configured: Boolean(metaToken()), run: () => metaCampaigns(includeOff) },
     { channel: "google_ads", missing: missing("GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET", "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_LOGIN_CUSTOMER_ID"), configured: Boolean(env("GOOGLE_ADS_DEVELOPER_TOKEN") && env("GOOGLE_ADS_CLIENT_ID") && env("GOOGLE_ADS_CLIENT_SECRET") && env("GOOGLE_ADS_REFRESH_TOKEN") && env("GOOGLE_ADS_LOGIN_CUSTOMER_ID")), run: () => googleCampaigns(includeOff) },
@@ -385,7 +409,7 @@ export const liveAdapter = {
   async listAdgroups(channel: Channel, campaignId: string): Promise<AdGroup[]> {
     const key = unpack(campaignId);
     if (channel === "naver_sa") {
-      const rows = await naverRequest("GET", `/ncc/adgroups?nccCampaignId=${encodeURIComponent(key.id)}`);
+      const rows = await naverRequest("GET", `/ncc/adgroups?nccCampaignId=${encodeURIComponent(key.id)}`, undefined, key.account);
       return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdgroupId), campaignId, channel, name: row.name, dailyBudget: num(row.dailyBudget), status: row.userLock ? "off" : "on" }));
     }
     if (channel === "meta") {
@@ -401,7 +425,7 @@ export const liveAdapter = {
   async listAds(channel: Channel, adgroupId: string): Promise<Ad[]> {
     const key = unpack(adgroupId);
     if (channel === "naver_sa") {
-      const rows = await naverRequest("GET", `/ncc/ads?nccAdgroupId=${encodeURIComponent(key.id)}`);
+      const rows = await naverRequest("GET", `/ncc/ads?nccAdgroupId=${encodeURIComponent(key.id)}`, undefined, key.account);
       return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdId), adgroupId, channel, name: row.subject || row.description || row.nccAdId, status: row.userLock ? "off" : "on" }));
     }
     if (channel === "meta") {
@@ -436,8 +460,8 @@ export const liveAdapter = {
     const key = unpack(operation.id);
     if (operation.channel === "naver_sa") {
       const endpoint = operation.entityType === "campaign" ? `/ncc/campaigns/${key.id}` : operation.entityType === "adgroup" ? `/ncc/adgroups/${key.id}` : `/ncc/ads/${key.id}`;
-      if (operation.kind === "set_status") await naverRequest("PUT", endpoint, { userLock: operation.status === "off" },);
-      else await naverRequest("PUT", endpoint, { dailyBudget: operation.dailyBudget });
+      if (operation.kind === "set_status") await naverRequest("PUT", endpoint, { userLock: operation.status === "off" }, key.account);
+      else await naverRequest("PUT", endpoint, { dailyBudget: operation.dailyBudget }, key.account);
       return { success: true, changed: 1 };
     }
     if (operation.channel === "meta") {
