@@ -266,6 +266,17 @@ export default function Dashboard() {
       && (!query || account.name.toLowerCase().includes(query) || account.id.includes(query)));
   }, [accounts, mappingTab, accountQuery]);
 
+  // 매핑돼 있지만 더 이상 계정 목록에 없는 계정 (예: 예전 버전에서 매니저 계정 번호를 매핑한 경우)
+  const staleKeys = useMemo(() => {
+    if (!selectedAdvertiser || !accounts.length) return [];
+    const known = new Set(accounts.map((account) => `${account.channel}:${account.id}`));
+    return selectedAdvertiser.accountKeys.filter((key) => !known.has(key));
+  }, [selectedAdvertiser, accounts]);
+
+  function unmapKey(advertiserId: string, key: string) {
+    setAdvertisers((current) => current.map((advertiser) => advertiser.id !== advertiserId ? advertiser : { ...advertiser, accountKeys: advertiser.accountKeys.filter((item) => item !== key) }));
+  }
+
   function saveRegisteredSa(next: RegisteredNaverSa[]) {
     setRegisteredSa(next);
     try { localStorage.setItem(NAVER_SA_STORAGE, JSON.stringify(next)); } catch { /* 저장 불가 환경 */ }
@@ -385,6 +396,12 @@ export default function Dashboard() {
 
         <input className="account-search" type="search" placeholder="계정 이름 또는 ID로 검색" value={accountQuery} onChange={(event) => setAccountQuery(event.target.value)} />
 
+        {selectedAdvertiser && staleKeys.length > 0 && <div className="stale-box">
+          <b>목록에 없는 계정이 {selectedAdvertiser.name}에 매핑돼 있어요</b>
+          <span>매니저(대행사) 계정 번호이거나 접근 권한이 없어진 계정이라 조회되지 않습니다. 해제한 뒤 실제 광고계정을 다시 체크해 주세요.</span>
+          <div>{staleKeys.map((key) => { const [channel, id] = key.split(":"); return <span className="stale-chip" key={key}><span className={`channel ${channel}`}>{channelLabel[channel as Channel] || channel}</span>{id}<button onClick={() => unmapKey(selectedAdvertiser.id, key)}>매핑 해제</button></span>; })}</div>
+        </div>}
+
         <div className="account-list">{visibleAccounts.map((account) => {
           const key = `${account.channel}:${account.id}`;
           const owner = ownerByAccount.get(key);
@@ -416,6 +433,7 @@ export default function Dashboard() {
         <span className={`storage-badge ${storageMode}`} title={storageError || undefined}>{storageMode === "supabase" ? "Supabase 저장" : storageMode === "local" ? "이 브라우저에만 저장" : "…"}</span>
       </nav>
       {storageError && <div className="connection-error"><b>저장소 오류</b><span>{storageError}</span></div>}
+      {staleKeys.length > 0 && <div className="stale-box"><b>조회되지 않는 계정이 매핑돼 있어요: {staleKeys.join(", ")}</b><span>매니저 계정 번호이거나 접근 권한이 없어진 계정입니다. <button className="link-button" onClick={() => setView("mapping")}>계정 매핑에서 정리하기</button></span></div>}
 
       {dashTab === "report" && <ReportView accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
       {dashTab === "mix" && selectedAdvertiser && <MixView advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
