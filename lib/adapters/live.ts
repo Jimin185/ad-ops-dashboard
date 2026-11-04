@@ -108,7 +108,8 @@ async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
       const spend = num(s.salesAmt);
       return { id: packed("naver_sa", account.id, row.nccCampaignId), channel: "naver_sa" as const, name: row.name,
         dailyBudget: num(row.dailyBudget), status: (row.userLock ? "off" : "on") as EntityStatus, spend, conversions: Math.round(num(s.ccnt)),
-        roas: spend ? Math.round(num(s.convAmt) / spend * 100) : 0, accountId: account.id, accountName: account.name };
+        roas: spend ? Math.round(num(s.convAmt) / spend * 100) : 0, accountId: account.id, accountName: account.name,
+        active: !row.userLock && row.status === "ELIGIBLE", rawStatus: row.status };
     });
   });
 }
@@ -177,7 +178,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const { since, until } = monthRange();
   return settleAccounts(accounts, async (account) => {
     const body = await metaGet(`act_${account.id}/campaigns`, {
-      fields: `id,name,status,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
+      fields: `id,name,status,effective_status,stop_time,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
       limit: "500",
     });
     return (body.data || []).filter((row: any) => includeOff || row.status === "ACTIVE").map((row: any) => {
@@ -187,7 +188,8 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       const spend = num(insight.spend);
       return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / 100,
         status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
-        accountId: account.id, accountName: account.name };
+        accountId: account.id, accountName: account.name,
+        active: row.effective_status === "ACTIVE" && (!row.stop_time || new Date(row.stop_time).getTime() > Date.now()), rawStatus: row.effective_status || row.status };
     });
   });
 }
@@ -226,13 +228,14 @@ async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await googleAccounts();
   return settleAccounts(accounts, async (account) => {
     const status = includeOff ? "campaign.status != 'REMOVED'" : "campaign.status = 'ENABLED'";
-    const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
+    const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign.serving_status, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
     return rows.map((row: any) => {
       const spend = num(row.metrics?.costMicros) / 1_000_000;
       return { id: packed("google_ads", account.id, String(row.campaign.id)), channel: "google_ads" as const, name: row.campaign.name,
         dailyBudget: num(row.campaignBudget?.amountMicros) / 1_000_000, status: asStatus(row.campaign.status), spend,
         conversions: Math.round(num(row.metrics?.conversions)), roas: spend ? Math.round(num(row.metrics?.conversionsValue) / spend * 100) : 0,
-        accountId: account.id, accountName: account.name };
+        accountId: account.id, accountName: account.name,
+        active: row.campaign.status === "ENABLED" && !["ENDED", "SUSPENDED", "NONE"].includes(row.campaign.servingStatus), rawStatus: row.campaign.servingStatus || row.campaign.status };
     });
   });
 }
@@ -351,7 +354,8 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       const s = stats.get(id) || { spend: 0, conversions: 0, revenue: 0 };
       return { id: packed("naver_gfa", account.id, id), channel: "naver_gfa" as const, name: row.name || `캠페인 ${id}`,
         dailyBudget: num(row.dailyBudget ?? row.budget?.dailyBudget ?? row.budgetAmount), status: gfaStatus(row), spend: s.spend,
-        conversions: Math.round(s.conversions), roas: s.spend ? Math.round(s.revenue / s.spend * 100) : 0, accountId: account.id, accountName: account.name };
+        conversions: Math.round(s.conversions), roas: s.spend ? Math.round(s.revenue / s.spend * 100) : 0, accountId: account.id, accountName: account.name,
+        active: gfaStatus(row) === "on" && !row.deleted && !["COMPLETED", "FINISHED", "ENDED", "DELETED", "STOPPED", "EXPIRED"].includes(String(row.status || "").toUpperCase()), rawStatus: row.status };
     }).filter((row) => includeOff || row.status === "on" || row.spend > 0);
   });
 }
@@ -587,11 +591,12 @@ export const liveAdapter = {
     const key = unpack(campaignId);
     if (channel === "naver_sa") {
       const rows = await naverRequest("GET", `/ncc/adgroups?nccCampaignId=${encodeURIComponent(key.id)}`, undefined, key.account);
-      return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdgroupId), campaignId, channel, name: row.name, dailyBudget: num(row.dailyBudget), status: row.userLock ? "off" : "on" }));
+      return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdgroupId), campaignId, channel, name: row.name, dailyBudget: num(row.dailyBudget), status: row.userLock ? "off" : "on", active: !row.userLock && (!row.status || row.status === "ELIGIBLE") }));
     }
     if (channel === "meta") {
-      const body = await metaGet(`${key.id}/adsets`, { fields: "id,name,status,daily_budget", limit: "500" });
-      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), campaignId, channel, name: row.name, dailyBudget: num(row.daily_budget) / 100, status: asStatus(row.status) }));
+      const body = await metaGet(`${key.id}/adsets`, { fields: "id,name,status,effective_status,end_time,daily_budget", limit: "500" });
+      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), campaignId, channel, name: row.name, dailyBudget: num(row.daily_budget) / 100, status: asStatus(row.status),
+        active: row.effective_status === "ACTIVE" && (!row.end_time || new Date(row.end_time).getTime() > Date.now()) }));
     }
     if (channel === "google_ads") {
       const rows = await googleSearch(key.account, `SELECT ad_group.id, ad_group.name, ad_group.status FROM ad_group WHERE campaign.id = ${key.id} AND ad_group.status != 'REMOVED'`);

@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { Channel, DailyRow } from "@/lib/types";
-import { mixTotalBudget, type MediaMix, type MixChannelPlan } from "@/lib/mix";
+import type { Campaign, Channel, DailyRow } from "@/lib/types";
+import { channelsFromLines, mixTotalBudget, type MediaMix, type MixChannelPlan, type MixLine } from "@/lib/mix";
+import { MixLines } from "./mix-lines";
 import { CHANNEL_LABEL, CHANNEL_ORDER, periodRange } from "./report-view";
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
@@ -18,8 +19,9 @@ function monthRange(month: string) {
   return { since: `${month}-01`, until: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) };
 }
 
-export function MixView({ advertiserId, advertiserName, accountKeys, mixes, onSave, onDelete, onAskAi, apiFetch }: {
+export function MixView({ advertiserId, advertiserName, accountKeys, mixes, campaigns, onSave, onDelete, onAskAi, apiFetch }: {
   advertiserId: string;
+  campaigns: Campaign[];
   advertiserName: string;
   accountKeys: string[];
   mixes: MediaMix[];
@@ -55,6 +57,14 @@ export function MixView({ advertiserId, advertiserName, accountKeys, mixes, onSa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, accountKeys.join(",")]);
 
+  const hasLines = Boolean(draft.lines?.some((l) => l.channel !== "all"));
+  function setLines(lines: MixLine[]) {
+    setDraft((d) => ({ ...d, lines, channels: lines.some((l) => l.channel !== "all") ? { ...d.channels, ...channelsFromLines(lines) } : d.channels }));
+  }
+  const today = periodRange("this_month");
+  const isCurrentMonth = month === thisMonth;
+  const daysInMonth = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+  const monthProgress = isCurrentMonth ? Number(today.until.slice(8, 10)) / daysInMonth : 1;
   const total = mixTotalBudget(draft);
   const blendedRoas = useMemo(() => total ? Object.values(draft.channels).reduce((s, c) => s + (c?.budget || 0) * (c?.targetRoas || 0), 0) / total : 0, [draft, total]);
   const prevMonth = nextMonth(month, -1);
@@ -98,7 +108,7 @@ export function MixView({ advertiserId, advertiserName, accountKeys, mixes, onSa
 
       <div className="mix-grid">
         <article className="viz-card">
-          <div className="viz-head"><span className="viz-title">채널별 계획</span><span className="viz-sub">합계 {won.format(total)} · 가중 목표 ROAS {Math.round(blendedRoas)}%</span></div>
+          <div className="viz-head"><span className="viz-title">채널별 계획</span><span className="viz-sub">합계 {won.format(total)} · 가중 목표 ROAS {Math.round(blendedRoas)}%{hasLines ? " · 아래 라인 합계로 자동 계산" : ""}</span></div>
           <div className="table-wrap"><table className="campaign-table mix-table">
             <thead><tr><th>채널</th><th>월 예산</th><th>비중</th><th>목표 ROAS(%)</th><th>{prevMonth} 실적</th><th>메모</th></tr></thead>
             <tbody>{channels.map((c) => {
@@ -106,9 +116,9 @@ export function MixView({ advertiserId, advertiserName, accountKeys, mixes, onSa
               const p = prev?.[c];
               return <tr key={c}>
                 <td><span className={`channel ${c}`}>{CHANNEL_LABEL[c]}</span></td>
-                <td><input className="num-input" inputMode="numeric" value={plan?.budget ? plan.budget.toLocaleString() : ""} placeholder="0" onChange={(e) => setPlan(c, { budget: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
+                <td><input className="num-input" inputMode="numeric" disabled={hasLines} value={plan?.budget ? plan.budget.toLocaleString() : ""} placeholder="0" onChange={(e) => setPlan(c, { budget: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
                 <td>{total && plan?.budget ? `${Math.round(plan.budget / total * 100)}%` : "–"}</td>
-                <td><input className="num-input short" inputMode="numeric" value={plan?.targetRoas || ""} placeholder="0" onChange={(e) => setPlan(c, { targetRoas: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
+                <td><input className="num-input short" inputMode="numeric" disabled={hasLines} value={plan?.targetRoas || ""} placeholder="0" onChange={(e) => setPlan(c, { targetRoas: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
                 <td className="muted">{prev === null ? "…" : p?.spend ? <>{won.format(p.spend)}<small> · ROAS {Math.round(p.revenue / p.spend * 100)}%</small></> : "–"}</td>
                 <td><input className="note-input" value={plan?.note || ""} placeholder="전략·타겟·소재 방향" onChange={(e) => setPlan(c, { note: e.target.value })} /></td>
               </tr>;
@@ -131,6 +141,10 @@ export function MixView({ advertiserId, advertiserName, accountKeys, mixes, onSa
           {existing && <button className="link-button danger" onClick={() => { if (window.confirm(`${month} 믹스를 삭제할까요?`)) void onDelete(existing); }}>이 믹스 삭제</button>}
         </article>
       </div>
+
+      <MixLines lines={draft.lines || []} onChange={setLines} campaigns={isCurrentMonth ? campaigns : []} monthProgress={monthProgress} isCurrentMonth={isCurrentMonth}
+        previousLines={prevMix?.lines} />
+      {!isCurrentMonth && draft.lines?.length ? <small className="viz-sub">라인별 집행 실적은 이번 달 믹스에서 보여요. 지난 달은 리포트 탭에서 확인하세요.</small> : null}
 
       <article className="viz-card">
         <div className="viz-head"><span className="viz-title">믹스 이력</span></div>

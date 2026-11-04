@@ -1,6 +1,6 @@
 import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import Anthropic from "@anthropic-ai/sdk";
-import { assistantTools, executeAssistantTool, type AssistantContext } from "@/lib/assistant-tools";
+import { assistantTools, executeAssistantTool, type AssistantContext, type MixLineSummary } from "@/lib/assistant-tools";
 import type { MediaMix } from "@/lib/mix";
 import type { PendingAction } from "@/lib/types";
 
@@ -20,7 +20,8 @@ const SYSTEM_PROMPT = `당신은 광고대행사의 광고 운영 어시스턴�
 - 이름이 겹치거나 의도가 모호하면 임의로 고르지 말고 물어보세요.
 - 금액은 별도 언급이 없으면 KRW입니다. 일예산과 월예산을 구분하세요. ROAS는 매출÷광고비×100(%)입니다.
 - 월별 미디어 믹스: get_mixes로 기존 믹스와 회고를, get_report로 실적을 확인한 뒤 propose_mix로 초안을 올리세요. 초안은 사용자가 카드에서 확인해야 저장됩니다.
-- 믹스대로 예산을 맞추는 요청은 믹스의 채널 월예산을 남은 일수로 나눠 캠페인 일예산 변경안(update_budget)으로 만드세요. Google Ads 예산 변경은 아직 지원되지 않으니 안내만 하세요.
+- 믹스 대비 성과·예산 조정은 get_mixes의 currentMonthLines(라인별 집행액·ROAS·연결 캠페인 ID)를 먼저 쓰세요. 이미 계산된 값이라 캠페인 전체 조회가 필요 없습니다.
+- 믹스대로 예산을 맞추는 요청은 (라인 월예산 - 집행액) ÷ 남은 일수를 라인의 운영 중 캠페인에 나눠 일예산 변경안(update_budget)으로 만드세요. Google Ads 예산 변경은 아직 지원되지 않으니 안내만 하세요.
 - 소재 제작 요청에는 채널 규격에 맞는 카피 시안(헤드라인·설명·CTA)을 여러 안으로 제시하세요.
 - 답은 간결한 한국어로, 비교 데이터는 마크다운 표로 보여주세요.`;
 
@@ -40,10 +41,10 @@ async function handle(request: Request) {
   }
 
   try {
-    const body = (await request.json()) as { messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[] } };
+    const body = (await request.json()) as { messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
     const history = (body.messages || []).slice(-20);
     if (!history.length) return Response.json({ error: "메시지를 입력해 주세요." }, { status: 400 });
-    const ctx: AssistantContext = { advertiserId: body.context?.advertiserId, advertiserName: body.context?.advertiserName, accountKeys: (body.context?.accountKeys || []).slice(0, 50), mixes: (body.context?.mixes || []).slice(0, 24) };
+    const ctx: AssistantContext = { advertiserId: body.context?.advertiserId, advertiserName: body.context?.advertiserName, accountKeys: (body.context?.accountKeys || []).slice(0, 50), mixes: (body.context?.mixes || []).slice(0, 12), mixLineSummary: body.context?.mixLineSummary };
 
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const messages: Anthropic.Beta.BetaMessageParam[] = history.map((message) => ({ role: message.role, content: message.content }));

@@ -7,7 +7,7 @@ import type { Channel, ChangeOperation, EntityType, PendingAction } from "@/lib/
 export const assistantTools = [
   {
     name: "list_campaigns",
-    description: "현재 선택한 광고주에 매핑된 계정의 캠페인 목록(이름, ID, 일예산, 상태, 이번 달 광고비·전환·ROAS)을 광고비 순으로 조회합니다.",
+    description: "현재 선택한 광고주에 매핑된 계정의 운영 중인 캠페인 목록(이름, ID, 일예산, 상태, 이번 달 광고비·전환·ROAS)을 광고비 순으로 조회합니다. 꺼짐·종료 캠페인까지 필요하면 includeOff=true.",
     strict: true,
     input_schema: {
       type: "object",
@@ -80,7 +80,7 @@ export const assistantTools = [
   },
   {
     name: "get_mixes",
-    description: "선택한 광고주의 저장된 월별 미디어 믹스(채널별 월예산·목표 ROAS·메모·회고)를 조회합니다.",
+    description: "선택한 광고주의 월별 미디어 믹스(채널·라인별 월예산·목표 ROAS·메모·회고)와 이번 달 라인별 실적(집행액·ROAS·연결 캠페인 ID)을 조회합니다. 믹스 대비 성과나 예산 조정은 이 결과로 판단하세요.",
     strict: true,
     input_schema: { type: "object", properties: {}, required: [], additionalProperties: false },
   },
@@ -165,14 +165,19 @@ export const assistantTools = [
 
 type ToolInput = Record<string, unknown>;
 
-export type AssistantContext = { advertiserId?: string; advertiserName?: string; accountKeys: string[]; mixes?: MediaMix[] };
+export type MixLineSummary = { month: string; lines: Array<{ line: string; channel: string; budget: number; targetRoas: number; spend: number; roas: number; campaigns: string[] }>; unassigned: { count: number; spend: number } };
+export type AssistantContext = { advertiserId?: string; advertiserName?: string; accountKeys: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary };
 
 const inScope = (ctx: AssistantContext, campaign: { channel: Channel; accountId?: string }) =>
   !ctx.accountKeys.length || ctx.accountKeys.includes(`${campaign.channel}:${campaign.accountId}`);
 
 export async function executeAssistantTool(name: string, input: ToolInput, ctx: AssistantContext = { accountKeys: [] }): Promise<{ result: unknown; pending?: PendingAction; mixDraft?: MediaMix }> {
   const adapter = getAdapter();
-  if (name === "get_mixes") return { result: { mixes: (ctx.mixes || []).map(({ month, status, targetRoas, channels, notes, review }) => ({ month, status, targetRoas, channels, notes, review })) } };
+  if (name === "get_mixes") return { result: {
+    mixes: (ctx.mixes || []).map(({ month, status, targetRoas, channels, notes, review, lines }) => ({ month, status, targetRoas, channels, notes, review, lines: lines?.map((l) => ({ name: l.name, channel: l.channel, budget: l.budget, targetRoas: l.targetRoas, keywords: l.keywords })) })),
+    // 이번 달 라인별 실적은 화면에서 이미 계산된 값 (캠페인 ID 목록 포함 → update_budget에 바로 사용 가능)
+    currentMonthLines: ctx.mixLineSummary,
+  } };
   if (name === "propose_mix") {
     if (!ctx.advertiserId) return { result: { error: "광고주가 선택되지 않았습니다." } };
     const existing = ctx.mixes?.find((mix) => mix.month === input.month);
@@ -182,7 +187,8 @@ export async function executeAssistantTool(name: string, input: ToolInput, ctx: 
     return { result: { status: "pending_user_confirmation", month: mixDraft.month, totalBudget: Object.values(mixDraft.channels).reduce((s, c) => s + (c?.budget || 0), 0) }, mixDraft };
   }
   if (name === "list_campaigns") {
-    const rows = (await adapter.listCampaigns(input.channel as Channel | undefined, Boolean(input.includeOff))).filter((row) => inScope(ctx, row));
+    const rows = (await adapter.listCampaigns(input.channel as Channel | undefined, Boolean(input.includeOff)))
+      .filter((row) => inScope(ctx, row) && (input.includeOff || (row.active ?? row.status === "on")));
     // 모델 컨텍스트를 아끼기 위해 필요한 필드만, 광고비 순 상위 150개
     const slim = rows.sort((a, b) => b.spend - a.spend).slice(0, 150).map((row) => ({ id: row.id, channel: row.channel, account: row.accountName, name: row.name, dailyBudget: row.dailyBudget, status: row.status, spend: Math.round(row.spend), conversions: row.conversions, roas: row.roas }));
     return { result: { total: rows.length, shown: slim.length, campaigns: slim } };
