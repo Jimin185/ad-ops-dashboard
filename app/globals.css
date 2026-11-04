@@ -186,3 +186,8 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .report, .mix { grid-template-columns:minmax(0,1fr); }
 .report-toolbar > .channel-tabs { max-width:100%; overflow-x:auto; min-width:0; }
 .view-tabs { scrollbar-width:none; }
+
+.stale-box { display:grid; gap:8px; padding:14px 16px; border:1px solid #f0d49a; background:#fff8e8; border-radius:12px; color:#6b4a00; font-size:13px; }
+.stale-box > div { display:flex; flex-wrap:wrap; gap:8px; }
+.stale-chip { display:inline-flex; align-items:center; gap:8px; padding:6px 6px 6px 8px; background:#fff; border:1px solid #f0d49a; border-radius:10px; }
+.stale-chip button { border:1px solid #e3c27a; background:#fff; border-radius:8px; padding:4px 8px; font-size:12px; font-weight:700; color:#6b4a00; }
