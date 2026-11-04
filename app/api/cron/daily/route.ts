@@ -50,7 +50,9 @@ export async function GET(request: Request) {
 }
 
 async function next(url: URL, step: number, log: string[]) {
-  const target = new URL(url.toString());
+  // 보호된 배포 주소가 아니라 프로덕션 도메인으로 이어서 호출한다
+  const prod = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  const target = new URL(prod ? `https://${prod}${url.pathname}` : url.toString());
   target.searchParams.set("step", String(step));
   // 다음 단계를 띄우고 응답은 기다리지 않는다 (요청이 나가면 서버 쪽에서 계속 실행됨)
   await fetch(target, { signal: AbortSignal.timeout(2500), cache: "no-store" }).catch(() => null);
