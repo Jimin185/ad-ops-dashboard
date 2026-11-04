@@ -13,7 +13,7 @@ import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from ".
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
-type DashTab = "report" | "mix" | "creative" | "sa" | "ops";
+type DashTab = "report" | "mix" | "ops" | "detail";
 const MIX_STORAGE = "adops-mixes";
 
 type RegisteredNaverSa = { id: string; name: string; token: string };
@@ -140,6 +140,7 @@ export default function Dashboard() {
   const [saForm, setSaForm] = useState({ name: "", customerId: "", apiKey: "", secretKey: "" });
   const [saStatus, setSaStatus] = useState<{ state: "idle" | "saving" | "error" | "done"; message: string }>({ state: "idle", message: "" });
   const [dashTab, setDashTab] = useState<DashTab>("report");
+  const [detailTab, setDetailTab] = useState<"sa" | "creative">("creative");
   const [storageMode, setStorageMode] = useState<"loading" | "supabase" | "local">("loading");
   const [storageError, setStorageError] = useState("");
   const [mixes, setMixes] = useState<MediaMix[]>([]);
@@ -299,11 +300,25 @@ export default function Dashboard() {
   // 네이버 SA 비즈머니 잔액
   const saIds = (selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => k.slice(9));
   useEffect(() => {
-    if (dashTab !== "ops" || !saIds.length) return;
+    if (dashTab !== "ops" || !saIds.length) return; // 매체별 데이터 화면에서만
     void apiFetch(`/api/bizmoney?ids=${saIds.join(",")}`).then((r) => r.json()).then((d) => setBalances(d.balances || []));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashTab, saIds.join(",")]);
   const hasGfa = (selectedAdvertiser?.accountKeys || []).some((k) => k.startsWith("naver_gfa:"));
+  const hasSa = saIds.length > 0;
+  const saDaily = (id: string) => advertiserCampaigns.filter((c) => c.channel === "naver_sa" && c.accountId === id).reduce((s, c) => s + c.spend, 0) / Math.max(1, Number(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", day: "2-digit" }).format(new Date())));
+
+  /** 다른 화면에서 캠페인을 누르면 매체별 데이터의 그 캠페인 상세로 이동 */
+  function goToCampaign(campaignId: string) {
+    const campaign = advertiserCampaigns.find((c) => c.id === campaignId) || campaigns.find((c) => c.id === campaignId);
+    if (!campaign) return window.alert("이 캠페인은 현재 캠페인 목록에 없어요 (삭제됐거나 이번 달 데이터가 없는 캠페인).");
+    setDashTab("ops");
+    setOpsFilter({ channel: campaign.channel, account: `${campaign.channel}:${campaign.accountId}`, product: "", line: "" });
+    setCampaignQuery(campaign.name);
+    if (!isRunning(campaign)) setShowInactive(true);
+    void openCampaign(campaign);
+    setTimeout(() => document.getElementById("campaign-detail")?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
+  }
 
   // 돌아가는 캠페인만 기본 표시. 검색하면 꺼진/종료된 것도 함께 보여준다.
   const query = campaignQuery.trim().toLowerCase();
@@ -542,16 +557,21 @@ export default function Dashboard() {
       </header>
 
       <nav className="view-tabs" aria-label="화면 전환">
-        {([["report", "리포트"], ["mix", "미디어 믹스"], ["creative", "소재 성과"], ["sa", "SA 분석"], ["ops", "운영 설정"]] as Array<[DashTab, string]>).filter(([key]) => key !== "sa" || selectedAdvertiser?.accountKeys.some((k) => k.startsWith("naver_sa:"))).map(([key, label]) => <button key={key} className={dashTab === key ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
+        {([["report", "대시보드"], ["ops", "매체별 데이터"], ["detail", "세부 성과분석"]] as Array<[DashTab, string]>).map(([key, label]) => <button key={key} className={dashTab === key || (key === "report" && dashTab === "mix") ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
         <span className={`storage-badge ${storageMode}`} title={storageError || undefined}>{storageMode === "supabase" ? "Supabase 저장" : storageMode === "local" ? "이 브라우저에만 저장" : "…"}</span>
       </nav>
       {storageError && <div className="connection-error"><b>저장소 오류</b><span>{storageError}</span></div>}
       {staleKeys.length > 0 && <div className="stale-box"><b>조회되지 않는 계정이 매핑돼 있어요: {staleKeys.join(", ")}</b><span>매니저 계정 번호이거나 접근 권한이 없어진 계정입니다. <button className="link-button" onClick={() => setView("mapping")}>계정 매핑에서 정리하기</button></span></div>}
 
-      {dashTab === "report" && <ReportView accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
-      {dashTab === "mix" && selectedAdvertiser && <MixView campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
-      {dashTab === "sa" && <SaView apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
-      {dashTab === "creative" && <CreativeView accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
+      {dashTab === "report" && <ReportView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
+      {dashTab === "mix" && selectedAdvertiser && <MixView onOpenCampaign={goToCampaign} campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
+      {dashTab === "mix" && <button className="link-button back-link" onClick={() => setDashTab("report")}>← 대시보드로</button>}
+      {dashTab === "detail" && <nav className="segmented" aria-label="세부 성과분석">
+        {hasSa && <button className={detailTab === "sa" ? "active" : ""} onClick={() => setDetailTab("sa")}>SA 분석</button>}
+        <button className={detailTab === "creative" || !hasSa ? "active" : ""} onClick={() => setDetailTab("creative")}>DA 소재성과</button>
+      </nav>}
+      {dashTab === "detail" && detailTab === "sa" && hasSa && <SaView onOpenCampaign={goToCampaign} apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
+      {dashTab === "detail" && (detailTab === "creative" || !hasSa) && <CreativeView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
       {dashTab === "ops" && <>
       <section className="metrics">
           <article><span>이번 달 광고비</span><strong>{won.format(totals.spend)}</strong><small>연결 채널 통합</small></article>
@@ -564,18 +584,13 @@ export default function Dashboard() {
             <div><span className="connection-dot" /><b>{channelLabel[connection.channel]}</b><em>{connection.status === "connected" ? "연결됨" : connection.status === "error" ? "오류" : connection.status === "not_configured" ? "미설정" : "준비 중"}</em></div>
             <strong>{connection.campaignCount}개</strong>
             <small title={connection.message}>{connection.message}</small>
+            {connection.channel === "naver_sa" && saIds.map((id) => { const b = balances.find((x) => x.customerId === id); const daily = saDaily(id);
+              return <small key={id} className={`bizmoney ${b?.bizmoney !== undefined && daily && b.bizmoney / daily < 7 ? "low" : ""}`}>비즈머니{saIds.length > 1 ? ` (${accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || id})` : ""} <b>{b?.error ? "조회 실패" : b?.bizmoney !== undefined ? won.format(b.bizmoney) : "…"}</b>{b?.bizmoney !== undefined && daily ? ` · 약 ${Math.floor(b.bizmoney / daily)}일분` : ""}</small>; })}
+            {connection.channel === "naver_gfa" && hasGfa && <small className="bizmoney muted">잔액: GFA API 미제공 (광고관리시스템에서 확인)</small>}
           </article>)}
         </section>}
   
-        {(saIds.length > 0 || hasGfa) && <section className="balance-row">
-          {saIds.map((id) => { const b = balances.find((x) => x.customerId === id); const daily = advertiserCampaigns.filter((c) => c.channel === "naver_sa" && c.accountId === id).reduce((s, c) => s + c.spend, 0) / Math.max(1, Number(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", day: "2-digit" }).format(new Date())));
-            return <article key={id} className={`balance-card ${b?.bizmoney !== undefined && daily && b.bizmoney / daily < 7 ? "low" : ""}`}>
-              <span>네이버 SA 비즈머니 · {accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || id}</span>
-              <strong>{b?.error ? "조회 실패" : b?.bizmoney !== undefined ? won.format(b.bizmoney) : "…"}</strong>
-              <small>{b?.error ? b.error : b?.bizmoney !== undefined && daily ? `이번 달 일평균 광고비 기준 약 ${Math.floor(b.bizmoney / daily)}일분${b.budgetLock ? " · 예산 잠금" : ""}` : ""}</small>
-            </article>; })}
-          {hasGfa && <article className="balance-card muted"><span>네이버 GFA 잔액</span><strong>API 미제공</strong><small>GFA API에는 잔액 조회 기능이 없어요. GFA 광고관리시스템에서 확인해 주세요.</small></article>}
-        </section>}
+
 
         <FilterBar value={opsFilter} onChange={setOpsFilter} accountKeys={selectedAdvertiser?.accountKeys || []} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />
   
@@ -609,7 +624,7 @@ export default function Dashboard() {
           </div>
         </section>
   
-        {selectedCampaign && <section className="panel detail-panel"><div className="panel-head"><div><h2>{selectedCampaign.name}</h2><p>광고그룹/광고세트를 선택하면 소재를 조회합니다.</p></div><button className="secondary" onClick={() => setSelectedCampaign(null)}>닫기</button></div>{detailError && <div className="connection-error">{detailError}</div>}<div className="entity-list">{adgroups.some((group) => !isRunning(group)) && <label className="toggle entity-toggle"><input type="checkbox" checked={showInactiveGroups} onChange={(e) => setShowInactiveGroups(e.target.checked)} /> 꺼짐/종료 광고그룹 {adgroups.filter((group) => !isRunning(group)).length}개 보기</label>}{adgroups.filter((group) => showInactiveGroups || isRunning(group)).map((group) => <div className={`entity-group ${isRunning(group) ? "" : "inactive-row"}`} key={group.id}><button onClick={() => void loadAds(group)}><b>{group.name}</b><span>{won.format(group.dailyBudget)} · {group.status.toUpperCase()}</span></button>{adsByGroup[group.id]?.map((ad) => <div className="ad-row" key={ad.id}><span>소재</span><b>{ad.name}</b><em>{ad.status.toUpperCase()}</em></div>)}</div>)}</div></section>}
+        {selectedCampaign && <section id="campaign-detail" className="panel detail-panel"><div className="panel-head"><div><h2>{selectedCampaign.name}</h2><p>광고그룹/광고세트를 선택하면 소재를 조회합니다.</p></div><button className="secondary" onClick={() => setSelectedCampaign(null)}>닫기</button></div>{detailError && <div className="connection-error">{detailError}</div>}<div className="entity-list">{adgroups.some((group) => !isRunning(group)) && <label className="toggle entity-toggle"><input type="checkbox" checked={showInactiveGroups} onChange={(e) => setShowInactiveGroups(e.target.checked)} /> 꺼짐/종료 광고그룹 {adgroups.filter((group) => !isRunning(group)).length}개 보기</label>}{adgroups.filter((group) => showInactiveGroups || isRunning(group)).map((group) => <div className={`entity-group ${isRunning(group) ? "" : "inactive-row"}`} key={group.id}><button onClick={() => void loadAds(group)}><b>{group.name}</b><span>{won.format(group.dailyBudget)} · {group.status.toUpperCase()}</span></button>{adsByGroup[group.id]?.map((ad) => <div className={`ad-row ${ad.active === false ? "inactive-row" : ""}`} key={ad.id}>{ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span>소재</span>}<b>{ad.name}</b><em>{ad.status.toUpperCase()}</em></div>)}</div>)}</div></section>}
       </>}
 
       {chatUi}

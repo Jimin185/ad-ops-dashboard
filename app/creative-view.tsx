@@ -13,7 +13,7 @@ const SORTS: Array<{ key: Sort; label: string }> = [{ key: "spend", label: "광�
 const roas = (r: CreativeRow) => r.spend ? r.revenue / r.spend * 100 : 0;
 const ctr = (r: CreativeRow) => r.impressions ? r.clicks / r.impressions * 100 : 0;
 
-export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines }: { accountKeys: string[]; apiFetch: (url: string, init?: RequestInit) => Promise<Response>; accounts: AdAccount[]; campaigns: Campaign[]; lines?: MixLine[] }) {
+export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines, onOpenCampaign }: { onOpenCampaign?: (campaignId: string) => void; accountKeys: string[]; apiFetch: (url: string, init?: RequestInit) => Promise<Response>; accounts: AdAccount[]; campaigns: Campaign[]; lines?: MixLine[] }) {
   const targets = accountKeys.filter((key) => key.startsWith("meta:") || key.startsWith("naver_gfa:"));
   const [period, setPeriod] = useState<Period>("this_month");
   const [filter, setFilter] = useState<Filter>(EMPTY_FILTER);
@@ -73,7 +73,8 @@ export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines
             </div>
             <div className="creative-body">
               <b title={r.name}>{r.name}</b>
-              <small title={`${r.campaignName || ""} › ${r.groupName || ""}`}>{[r.campaignName, r.groupName].filter(Boolean).join(" › ") || "–"}</small>
+              {r.campaignId ? <button className="link-button campaign-link small" title="매체별 데이터에서 캠페인 보기" onClick={() => onOpenCampaign?.(r.campaignId!)}>{[r.campaignName, r.groupName].filter(Boolean).join(" › ") || "캠페인 보기"}</button>
+                : <small title={`${r.campaignName || ""} › ${r.groupName || ""}`}>{[r.campaignName, r.groupName].filter(Boolean).join(" › ") || "–"}</small>}
               {r.headline && <p className="creative-copy">{r.headline}</p>}
               <dl>
                 <div><dt>광고비</dt><dd>{won.format(r.spend)}</dd></div>

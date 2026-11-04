@@ -50,6 +50,8 @@ export type Ad = {
   channel: Channel;
   name: string;
   status: EntityStatus;
+  imageUrl?: string;
+  active?: boolean;
 };
 
 export type StatsRow = {

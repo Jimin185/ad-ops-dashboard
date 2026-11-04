@@ -19,7 +19,8 @@ function autoKeywords(lines: MixLine[], campaigns: Campaign[]) {
   });
 }
 
-export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentMonth, previousLines }: {
+export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentMonth, previousLines, onOpenCampaign }: {
+  onOpenCampaign?: (campaignId: string) => void;
   lines: MixLine[];
   onChange: (lines: MixLine[]) => void;
   campaigns: Campaign[];
@@ -143,7 +144,7 @@ export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentM
             </tr>,
             expanded === line.id && <tr key={`${line.id}-x`} className="expand-row"><td colSpan={9}>
               {list.length ? <ul className="line-campaigns">{list.sort((a, b) => b.spend - a.spend).map((c) => <li key={c.id}>
-                <span className={`channel ${c.channel}`}>{CHANNEL_LABEL[c.channel]}</span><span className={isRunning(c) ? "" : "muted"}>{c.name}</span>
+                <span className={`channel ${c.channel}`}>{CHANNEL_LABEL[c.channel]}</span><button className={`link-button campaign-link ${isRunning(c) ? "" : "muted"}`} onClick={() => onOpenCampaign?.(c.id)}>{c.name}</button>
                 <em>{won.format(c.spend)} · ROAS {c.roas}%{line.campaignIds.includes(c.id) ? " · 직접 지정" : ""}</em>
                 <button className="link-button" onClick={() => unpin(line, c)}>빼기</button></li>)}</ul>
                 : <span className="viz-sub">연결된 캠페인이 없어요. 키워드를 바꾸거나 아래 미분류 캠페인에서 직접 지정하세요.</span>}

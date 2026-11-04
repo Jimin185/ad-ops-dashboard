@@ -282,3 +282,18 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .board-meta { display:flex; flex-wrap:wrap; gap:6px; align-items:center; } .board-meta small { color:var(--muted); font-size:11px; margin-left:auto; }
 .tag { padding:3px 8px; border-radius:999px; background:var(--green-soft); color:var(--green); font-size:11px; font-weight:700; }
 @media (max-width: 760px) { .board-form { grid-template-columns:1fr; } }
+
+.segmented { display:inline-flex; gap:4px; padding:4px; background:#fff; border:1px solid var(--line); border-radius:12px; margin:-6px 0 16px; }
+.segmented button { border:0; background:transparent; padding:8px 14px; border-radius:9px; font-weight:700; font-size:13px; color:var(--muted); }
+.segmented button.active { background:var(--green-soft); color:var(--green); }
+.back-link { display:inline-block; margin:-6px 0 12px; }
+.connection .bizmoney { display:block; margin-top:6px; padding-top:6px; border-top:1px dashed var(--line); font-size:11px; color:var(--muted); }
+.connection .bizmoney b { color:var(--ink); } .connection .bizmoney.low b { color:var(--critical); }
+.ad-thumb { width:32px; height:32px; border-radius:6px; object-fit:cover; background:#f1f2ef; flex:none; }
+.link-cell { cursor:pointer; } .link-cell:hover b { text-decoration:underline; }
+
+.campaign-link { text-decoration:none; color:inherit; font-weight:400; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+.campaign-link:hover { text-decoration:underline; color:var(--green); }
+.campaign-link.small { display:block; font-size:11px; color:var(--muted); margin-top:2px; }
+.campaign-link.muted { color:var(--muted); }
+.gauge-card .link-button { justify-self:center; }

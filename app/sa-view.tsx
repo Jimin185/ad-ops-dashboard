@@ -53,7 +53,7 @@ function MetricCells({ m }: { m: Metrics }) {
 }
 const METRIC_HEAD = ["노출", "클릭", "CTR", "CPC", "광고비", "구매", "구매매출", "ROAS"];
 
-export function SaView({ accountIds, apiFetch }: { accountIds: Array<{ id: string; name: string }>; apiFetch: (url: string, init?: RequestInit) => Promise<Response> }) {
+export function SaView({ accountIds, apiFetch, onOpenCampaign }: { onOpenCampaign?: (campaignId: string) => void; accountIds: Array<{ id: string; name: string }>; apiFetch: (url: string, init?: RequestInit) => Promise<Response> }) {
   const [account, setAccount] = useState(accountIds[0]?.id || "");
   const [period, setPeriod] = useState<Period>("this_month");
   const [tab, setTab] = useState<Tab>("adgroups");
@@ -130,7 +130,7 @@ export function SaView({ accountIds, apiFetch }: { accountIds: Array<{ id: strin
         <div className="viz-card table-card"><div className="table-wrap">
           {tab === "adgroups" && <table className="campaign-table sa-table"><thead><tr><th>유형</th><th>캠페인 › 광고그룹</th>{METRIC_HEAD.map((h) => <th key={h}>{h}</th>)}</tr></thead>
             <tbody>{filterBase(data.adgroups, (r) => `${r.campaign} ${r.adgroup}`).map((r) => <tr key={r.adgroupId} className={r.active === false ? "inactive-row" : ""} onClick={() => { setGroup(r.adgroupId); setType(r.type); setTab(r.type === "SHOPPING" ? "terms" : "keywords"); }}>
-              <td>{TYPE_LABEL[r.type] || r.type}</td><td><b>{r.adgroup}</b><small className="id">{r.campaign}</small></td><MetricCells m={r} /></tr>)}</tbody></table>}
+              <td>{TYPE_LABEL[r.type] || r.type}</td><td><b>{r.adgroup}</b><button className="link-button campaign-link small" onClick={(e) => { e.stopPropagation(); onOpenCampaign?.(`naver_sa|${account}|${(r as any).campaignId}`); }}>{r.campaign} ↗</button></td><MetricCells m={r} /></tr>)}</tbody></table>}
 
           {tab === "keywords" && <table className="campaign-table sa-table"><thead><tr><th>키워드</th><th>광고그룹</th>{METRIC_HEAD.map((h) => <th key={h}>{h}</th>)}</tr></thead>
             <tbody>{filterBase(data.keywords, (r) => `${r.keyword} ${r.adgroup}`).slice(0, 300).map((r) => <tr key={`${r.adgroupId}|${r.id}`} className={r.active === false ? "inactive-row" : ""}>

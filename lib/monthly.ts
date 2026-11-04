@@ -29,7 +29,9 @@ export async function ensureMonthly(accountKeys: string[], budgetMs = 45_000) {
     const accountId = rest.join(":");
     const rows = await sql`select month, fetched_at from adops_monthly_done where channel = ${channel} and account_id = ${accountId}`;
     const fetched = new Map(rows.map((r: any) => [r.month, new Date(r.fetched_at).getTime()]));
-    const missing = months.filter((m) => !fetched.has(m) || fetched.get(m)! < settledAt(m));
+    // Meta는 협력광고 구매(공유항목) 합산 규칙이 바뀐 시점 이전 적재분을 다시 받는다
+    const refetchBefore = channel === "meta" ? Date.parse("2026-11-04T18:30:00Z") : 0;
+    const missing = months.filter((m) => !fetched.has(m) || fetched.get(m)! < settledAt(m) || fetched.get(m)! < refetchBefore);
     if (!missing.length) { done++; continue; }
     if (Date.now() - started > budgetMs) { pending++; continue; }
     try {

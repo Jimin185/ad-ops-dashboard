@@ -179,13 +179,13 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const { since, until } = monthRange();
   return settleAccounts(accounts, async (account) => {
     const body = await metaGet(`act_${account.id}/campaigns`, {
-      fields: `id,name,status,effective_status,stop_time,objective,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
+      fields: `id,name,status,effective_status,stop_time,objective,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values,catalog_segment_actions,catalog_segment_value}`,
       limit: "500",
     });
     return (body.data || []).filter((row: any) => includeOff || row.status === "ACTIVE").map((row: any) => {
       const insight = row.insights?.data?.[0] || {};
-      const purchase = (insight.actions || []).find((x: any) => ["purchase", "omni_purchase"].includes(x.action_type));
-      const revenue = (insight.action_values || []).find((x: any) => ["purchase", "omni_purchase"].includes(x.action_type));
+      const purchase = { value: metaConv(insight) };
+      const revenue = { value: metaRev(insight) };
       const spend = num(insight.spend);
       return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / 100,
         status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
@@ -378,15 +378,27 @@ async function googleDaily(accountId: string, since: string, until: string): Pro
 }
 
 const META_PURCHASE = ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"];
+// 협력광고(카탈로그 공유) 계정은 구매가 catalog_segment_* 에 잡힌다. 어떤 계정이 협력광고인지 모르므로 항상 둘을 더한다.
+const META_CATALOG_FIELDS = "catalog_segment_actions,catalog_segment_value";
+const metaConv = (row: any) => metaPick(row?.actions) + metaPick(row?.catalog_segment_actions);
+const metaRev = (row: any) => metaPick(row?.action_values) + metaPick(row?.catalog_segment_value);
+/** catalog_segment 필드를 못 받는 계정이면 빼고 다시 요청한다. */
+async function metaInsightsSafe(path: string, params: Record<string, string>) {
+  try { return await metaPaged(path, params); }
+  catch (error) {
+    if (!/catalog_segment/i.test(String(error)) && !/Invalid parameter|nonexisting field/i.test(String(error))) throw error;
+    return metaPaged(path, { ...params, fields: params.fields.replace(/,?catalog_segment_(actions|value)/g, "") });
+  }
+}
 const metaPick = (list: any[] | undefined) => {
   const items = list || [];
   for (const type of META_PURCHASE) { const hit = items.find((x: any) => x.action_type === type); if (hit) return num(hit.value); }
   return 0;
 };
 async function metaDaily(accountId: string, since: string, until: string): Promise<DailyRow[]> {
-  const rows = await metaPaged(`act_${accountId}/insights`, { level: "account", time_increment: "1", time_range: JSON.stringify({ since, until }), fields: "spend,impressions,clicks,actions,action_values" });
-  return rows.map((row: any) => ({ date: row.date_start, channel: "meta" as const, accountId, spend: num(row.spend), revenue: metaPick(row.action_values),
-    conversions: metaPick(row.actions), impressions: num(row.impressions), clicks: num(row.clicks) }));
+  const rows = await metaInsightsSafe(`act_${accountId}/insights`, { level: "account", time_increment: "1", time_range: JSON.stringify({ since, until }), fields: `spend,impressions,clicks,actions,action_values,${META_CATALOG_FIELDS}` });
+  return rows.map((row: any) => ({ date: row.date_start, channel: "meta" as const, accountId, spend: num(row.spend), revenue: metaRev(row),
+    conversions: metaConv(row), impressions: num(row.impressions), clicks: num(row.clicks) }));
 }
 
 function gfaClampRange(since: string, until: string) {
@@ -465,7 +477,7 @@ type DailyBucket = { rows: Record<string, DailyRow>; covered: Record<string, str
 async function cachedDaily(channel: Channel, accountId: string, since: string, until: string, force: boolean) {
   const months = [...new Set(eachDate(since, until).map((d) => d.slice(0, 7)))];
   const buckets: Record<string, DailyBucket> = {};
-  for (const month of months) buckets[month] = (await cacheGet<DailyBucket>(`daily:${channel}:${accountId}:${month}`))?.value || { rows: {}, covered: {} };
+  for (const month of months) buckets[month] = (await cacheGet<DailyBucket>(`daily:v2:${channel}:${accountId}:${month}`))?.value || { rows: {}, covered: {} };
   const refreshFloor = nextDailyRefresh() - 24 * 3600_000;
   const usable = (date: string) => {
     const at = buckets[date.slice(0, 7)].covered[date];
@@ -481,7 +493,7 @@ async function cachedDaily(channel: Channel, accountId: string, since: string, u
     const stamp = new Date().toISOString();
     for (const date of eachDate(from, to)) { const b = buckets[date.slice(0, 7)]; if (!b) continue; b.covered[date] = stamp; delete b.rows[date]; }
     for (const row of rows) { const b = buckets[row.date?.slice(0, 7)]; if (b && row.date >= from && row.date <= to) b.rows[row.date] = row; }
-    for (const month of months) await cacheSet(`daily:${channel}:${accountId}:${month}`, buckets[month], null);
+    for (const month of months) await cacheSet(`daily:v2:${channel}:${accountId}:${month}`, buckets[month], null);
     fetched = missing.length;
   }
   const rows = eachDate(since, until).map((d) => buckets[d.slice(0, 7)].rows[d]).filter(Boolean) as DailyRow[];
@@ -506,9 +518,9 @@ export { eachDate };
 
 // ---- 소재 성과 ----
 async function metaCreatives(accountId: string, since: string, until: string): Promise<CreativeRow[]> {
-  const insights = await metaPaged(`act_${accountId}/insights`, {
+  const insights = await metaInsightsSafe(`act_${accountId}/insights`, {
     level: "ad", time_range: JSON.stringify({ since, until }),
-    fields: "ad_id,ad_name,adset_name,campaign_id,campaign_name,spend,impressions,clicks,actions,action_values",
+    fields: `ad_id,ad_name,adset_name,campaign_id,campaign_name,spend,impressions,clicks,actions,action_values,${META_CATALOG_FIELDS}`,
   });
   const top = insights.filter((row: any) => num(row.spend) > 0).sort((a: any, b: any) => num(b.spend) - num(a.spend)).slice(0, 60);
   const details: Record<string, any> = {};
@@ -524,7 +536,7 @@ async function metaCreatives(accountId: string, since: string, until: string): P
     return { id: row.ad_id, channel: "meta" as const, accountId, campaignId: packed("meta", accountId, String(row.campaign_id)), name: row.ad_name, campaignName: row.campaign_name, groupName: row.adset_name,
       imageUrl: creative.image_url || link.picture || link.image_url || creative.thumbnail_url, headline: creative.title || link.name || link.title, body: creative.body || link.message,
       status: details[row.ad_id]?.effective_status, spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
-      conversions: metaPick(row.actions), revenue: metaPick(row.action_values) };
+      conversions: metaConv(row), revenue: metaRev(row) };
   });
 }
 
@@ -564,7 +576,7 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
   let oldest = Date.now();
   const rows = (await Promise.all(targets.map(async (t) => {
     // 지난 주 이전 기간은 영구 적재, 그 외는 하루 한 번 갱신
-    const key = `creative:${t.channel}:${t.accountId}:${since}:${until}`;
+    const key = `creative:v2:${t.channel}:${t.accountId}:${since}:${until}`;
     const cached = force ? null : await cacheGet<CreativeRow[]>(key);
     if (cached) { oldest = Math.min(oldest, cached.updatedAt); return cached.value; }
     try {
@@ -826,8 +838,8 @@ export async function fetchMonthly(channel: Channel, accountId: string, months: 
     return rows.map((r: any) => ({ ...base, month: String(r.segments.month).slice(0, 7), campaignId: String(r.campaign.id), campaignName: r.campaign.name, product: productOf(r.campaign.advertisingChannelType) || "", imp: num(r.metrics.impressions), clk: num(r.metrics.clicks), cost: num(r.metrics.costMicros) / 1e6, conv: num(r.metrics.conversions), revenue: num(r.metrics.conversionsValue) }));
   }
   if (channel === "meta") {
-    const rows = await metaPaged(`act_${accountId}/insights`, { level: "campaign", time_increment: "monthly", time_range: JSON.stringify({ since, until }), fields: "campaign_id,campaign_name,objective,spend,impressions,clicks,actions,action_values" });
-    return rows.map((r: any) => ({ ...base, month: String(r.date_start).slice(0, 7), campaignId: String(r.campaign_id), campaignName: r.campaign_name, product: productOf(r.objective) || "", imp: num(r.impressions), clk: num(r.clicks), cost: num(r.spend), conv: metaPick(r.actions), revenue: metaPick(r.action_values) }));
+    const rows = await metaInsightsSafe(`act_${accountId}/insights`, { level: "campaign", time_increment: "monthly", time_range: JSON.stringify({ since, until }), fields: `campaign_id,campaign_name,objective,spend,impressions,clicks,actions,action_values,${META_CATALOG_FIELDS}` });
+    return rows.map((r: any) => ({ ...base, month: String(r.date_start).slice(0, 7), campaignId: String(r.campaign_id), campaignName: r.campaign_name, product: productOf(r.objective) || "", imp: num(r.impressions), clk: num(r.clicks), cost: num(r.spend), conv: metaConv(r), revenue: metaRev(r) }));
   }
   const out: MonthlyRow[] = [];
   if (channel === "naver_gfa") {
@@ -941,6 +953,21 @@ async function allCampaigns(includeOff = false) {
 
 async function entityFromCampaign(id: string) { return (await allCampaigns(true)).find((row) => row.id === id) || null; }
 
+// GFA 광고세트·소재 목록 (계정 단위로 받아 30분 캐시 후 캠페인/광고세트로 거른다)
+async function gfaPagedList(accountId: string, resource: "adSets" | "creatives", params: Record<string, string> = {}) {
+  const key = `gfa-list:${accountId}:${resource}:${JSON.stringify(params)}`;
+  const cached = await cacheGet<any[]>(key);
+  if (cached) return cached.value;
+  const rows: any[] = [];
+  for (let page = 0; page < 30; page++) {
+    const items = gfaList(await gfaGet(`/adAccounts/${accountId}/${resource}`, { ...params, page: String(page), size: "100" }));
+    rows.push(...items);
+    if (items.length < 100) break;
+  }
+  await cacheSet(key, rows, Date.now() + 30 * 60_000);
+  return rows;
+}
+
 export const liveAdapter = {
   async listCampaigns(channel?: Channel, includeOff = false) {
     const rows = await allCampaigns(includeOff);
@@ -961,23 +988,36 @@ export const liveAdapter = {
       const rows = await googleSearch(key.account, `SELECT ad_group.id, ad_group.name, ad_group.status FROM ad_group WHERE campaign.id = ${key.id} AND ad_group.status != 'REMOVED'`);
       return rows.map((row: any) => ({ id: packed(channel, key.account, String(row.adGroup.id)), campaignId, channel, name: row.adGroup.name, dailyBudget: 0, status: asStatus(row.adGroup.status) }));
     }
-    throw new Error("네이버 GFA 실연동 규격 확인이 필요합니다.");
+    if (channel === "naver_gfa") {
+      const rows = (await gfaPagedList(key.account, "adSets", { campaignNo: key.id })).filter((row) => String(row.campaignNo ?? row.campaign?.no ?? key.id) === key.id);
+      return rows.map((row: any) => ({ id: packed(channel, key.account, String(row.no)), campaignId, channel, name: row.name, dailyBudget: num(row.budget?.dailyBudget ?? row.dailyBudget ?? row.budgetAmount),
+        status: (row.activated === false ? "off" : "on") as EntityStatus, active: row.activated !== false && !row.deleted && !/COMPLETED|FINISHED|ENDED/.test(String(row.status || "")) }));
+    }
+    throw new Error("지원하지 않는 채널입니다.");
   },
   async listAds(channel: Channel, adgroupId: string): Promise<Ad[]> {
     const key = unpack(adgroupId);
     if (channel === "naver_sa") {
       const rows = await naverRequest("GET", `/ncc/ads?nccAdgroupId=${encodeURIComponent(key.id)}`, undefined, key.account);
-      return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdId), adgroupId, channel, name: row.subject || row.description || row.nccAdId, status: row.userLock ? "off" : "on" }));
+      return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdId), adgroupId, channel,
+        name: row.referenceData?.productName || row.ad?.headline || row.subject || row.description || row.nccAdId, status: row.userLock ? "off" : "on",
+        imageUrl: row.referenceData?.imageUrl, active: !row.userLock && row.status !== "PAUSED" }));
     }
     if (channel === "meta") {
-      const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status", limit: "500" });
-      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), adgroupId, channel, name: row.name, status: asStatus(row.status) }));
+      const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status,effective_status,creative.thumbnail_width(120).thumbnail_height(120){thumbnail_url,image_url}", limit: "500" });
+      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), adgroupId, channel, name: row.name, status: asStatus(row.status),
+        imageUrl: row.creative?.thumbnail_url || row.creative?.image_url, active: row.effective_status === "ACTIVE" }));
     }
     if (channel === "google_ads") {
       const rows = await googleSearch(key.account, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status FROM ad_group_ad WHERE ad_group.id = ${key.id} AND ad_group_ad.status != 'REMOVED'`);
       return rows.map((row: any) => ({ id: packed(channel, key.account, String(row.adGroupAd.ad.id)), adgroupId, channel, name: row.adGroupAd.ad.name || String(row.adGroupAd.ad.id), status: asStatus(row.adGroupAd.status) }));
     }
-    throw new Error("네이버 GFA 실연동 규격 확인이 필요합니다.");
+    if (channel === "naver_gfa") {
+      const rows = (await gfaPagedList(key.account, "creatives", { adSetNo: key.id })).filter((row) => String(row.adSetNo) === key.id);
+      return rows.map((row: any) => { const media = row.image || row.medias?.[0] || {}; return { id: packed(channel, key.account, String(row.no)), adgroupId, channel, name: row.name || `소재 ${row.no}`,
+        status: (row.activated === false ? "off" : "on") as EntityStatus, imageUrl: media.imageUrl || media.url, active: row.activated !== false }; });
+    }
+    throw new Error("지원하지 않는 채널입니다.");
   },
   async getStats(channel?: Channel, _level = "campaign", ids?: string[]): Promise<StatsRow[]> {
     const rows = (await allCampaigns(true)).filter((row) => (!channel || row.channel === channel) && (!ids?.length || ids.includes(row.id)));
