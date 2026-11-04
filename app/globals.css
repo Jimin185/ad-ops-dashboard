@@ -236,3 +236,9 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .product-cell { display:flex; gap:10px; align-items:center; min-width:280px; }
 .product-cell img, .product-cell .no-img { width:48px; height:48px; border-radius:8px; object-fit:cover; background:#f1f2ef; flex:none; }
 .group-select { max-width:280px; }
+
+.plan-steps { margin:8px 0; padding-left:18px; display:grid; gap:8px; font-size:12px; }
+.plan-steps li b { display:block; }
+.plan-steps code { display:block; font-size:11px; color:var(--muted); word-break:break-all; }
+.plan-steps li.danger b, .plan-steps li.danger code { color:var(--critical); }
+.plan-steps pre { white-space:pre-wrap; word-break:break-all; font-size:11px; background:#f6f7f5; padding:6px; border-radius:6px; max-height:160px; overflow:auto; margin:4px 0 0; }

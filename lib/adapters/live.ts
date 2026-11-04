@@ -711,6 +711,106 @@ export async function getSaInsights(customerId: string, since: string, until: st
   };
 }
 
+// ---- 범용 매체 API (AI 세팅용) ----
+// 조회는 바로, 변경은 사용자 승인 후 실행된다. 모든 요청은 선택한 광고주에 매핑된 계정 안에서만 허용한다.
+export type MediaMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type MediaStep = { channel: Channel; accountId: string; method: MediaMethod; path: string; body?: unknown; note?: string };
+
+const metaObjectId = (path: string) => path.replace(/^\/+/, "").split(/[/?]/)[0];
+
+/** 요청이 해당 계정 범위 안인지 확인. 범위 밖이면 이유를 담아 예외. */
+export async function assertMediaScope(step: MediaStep, allowedKeys: string[]) {
+  const account = cleanId(step.accountId);
+  if (!allowedKeys.includes(`${step.channel}:${account}`)) throw new Error(`${step.channel}:${account} 계정은 이 광고주에 매핑돼 있지 않습니다.`);
+  const path = step.path.replace(/^\/+/, "");
+  if (step.channel === "google_ads" && !path.startsWith(`customers/${account}`)) throw new Error(`Google Ads 경로는 customers/${account}/... 로 시작해야 합니다.`);
+  if (step.channel === "naver_gfa" && !path.startsWith(`adAccounts/${account}`)) throw new Error(`GFA 경로는 /adAccounts/${account}/... 로 시작해야 합니다.`);
+  if (step.channel === "meta") {
+    const id = metaObjectId(path);
+    if (id.startsWith("act_")) { if (id !== `act_${account}`) throw new Error(`다른 Meta 광고계정(${id})입니다.`); }
+    else if (step.method !== "GET" && /^\d+$/.test(id)) {
+      // 캠페인·광고세트·광고·크리에이티브 ID면 소속 광고계정을 확인
+      const owner = await metaGet(id, { fields: "account_id" }).catch(() => null);
+      if (owner?.account_id && String(owner.account_id).replace(/^act_/, "") !== account) throw new Error(`대상 ${id}는 다른 Meta 광고계정 소속입니다.`);
+    }
+  }
+}
+
+async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
+  const config = gfaConfig();
+  if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
+  const url = `${GFA_BASE}/${path.replace(/^\/+/, "")}`;
+  const call = async (token: string) => fetch(url, { method, headers: { Authorization: `Bearer ${token}`, AccessManagerAccountNo: config.manager, "Content-Type": "application/json" }, body: body === undefined || method === "GET" ? undefined : JSON.stringify(body), cache: "no-store" });
+  let response = await call(await gfaToken());
+  if (response.status === 401) response = await call(await gfaToken(true));
+  const text = await response.text();
+  let parsed: any; try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { message: text }; }
+  if (!response.ok) throw new Error(`${[parsed?.message, parsed?.error?.message, parsed?.title].find((v) => typeof v === "string") || JSON.stringify(parsed).slice(0, 400)} (HTTP ${response.status})`);
+  return parsed;
+}
+
+async function googleRaw(method: MediaMethod, path: string, body?: unknown) {
+  const developerToken = env("GOOGLE_ADS_DEVELOPER_TOKEN"), loginId = env("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
+  if (!developerToken || !loginId) throw new Error("Google Ads MCC 인증정보가 없습니다.");
+  return jsonFetch(`https://googleads.googleapis.com/${GOOGLE_VERSION}/${path.replace(/^\/+/, "")}`, {
+    method, headers: { Authorization: `Bearer ${await googleToken()}`, "developer-token": developerToken, "login-customer-id": cleanId(loginId), "Content-Type": "application/json" },
+    body: body === undefined || method === "GET" ? undefined : JSON.stringify(body),
+  });
+}
+
+async function metaRaw(method: MediaMethod, path: string, body?: unknown) {
+  const token = metaToken();
+  if (!token) throw new Error("Meta 액세스 토큰이 없습니다.");
+  const clean = path.replace(/^\/+/, "");
+  if (method === "GET") {
+    const [p, q] = clean.split("?");
+    const params = new URLSearchParams(q || "");
+    if (body && typeof body === "object") for (const [k, v] of Object.entries(body as any)) params.set(k, typeof v === "string" ? v : JSON.stringify(v));
+    params.set("access_token", token);
+    return jsonFetch(`https://graph.facebook.com/${META_VERSION}/${p}?${params}`);
+  }
+  // Graph API 쓰기는 form 필드. 객체/배열 값은 JSON 문자열로 보낸다 (targeting, creative 등).
+  const fields = new URLSearchParams({ access_token: token });
+  if (body && typeof body === "object") for (const [k, v] of Object.entries(body as any)) fields.set(k, typeof v === "string" ? v : JSON.stringify(v));
+  return jsonFetch(`https://graph.facebook.com/${META_VERSION}/${clean}${method === "DELETE" ? `?access_token=${token}` : ""}`, method === "DELETE" ? { method: "DELETE" } : { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: fields });
+}
+
+export async function executeMediaStep(step: MediaStep) {
+  const path = step.path.startsWith("/") ? step.path : `/${step.path}`;
+  if (step.channel === "naver_sa") return naverRequest(step.method, path, step.method === "GET" ? undefined : step.body, cleanId(step.accountId));
+  if (step.channel === "naver_gfa") return gfaRequest(step.method, path, step.body);
+  if (step.channel === "google_ads") return googleRaw(step.method, path, step.body);
+  return metaRaw(step.method, path, step.body);
+}
+
+/** "{{0.id}}" 처럼 앞 단계 결과를 참조하는 값을 채운다. */
+function fillRefs(value: unknown, results: unknown[]): unknown {
+  if (typeof value === "string") return value.replace(/\{\{(\d+)\.([\w.\[\]]+)\}\}/g, (_, i, field) => {
+    let cur: any = results[Number(i)];
+    for (const part of field.replace(/\[(\d+)\]/g, ".$1").split(".")) cur = cur?.[part];
+    if (cur === undefined || cur === null) throw new Error(`앞 단계 결과에서 {{${i}.${field}}} 값을 찾지 못했습니다.`);
+    return String(cur);
+  });
+  if (Array.isArray(value)) return value.map((v) => fillRefs(v, results));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fillRefs(v, results)]));
+  return value;
+}
+
+/** 승인된 단계들을 순서대로 실행. 실패하면 거기서 멈추고 지금까지 결과를 돌려준다. */
+export async function executeMediaPlan(steps: MediaStep[], allowedKeys: string[]) {
+  const results: unknown[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    try {
+      const step = fillRefs(steps[i], results) as MediaStep;
+      await assertMediaScope(step, allowedKeys);
+      results.push(await executeMediaStep(step));
+    } catch (error) {
+      return { success: false, completed: i, failedStep: i, error: error instanceof Error ? error.message : String(error), results };
+    }
+  }
+  return { success: true, completed: steps.length, results };
+}
+
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
 
 export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
@@ -817,6 +917,7 @@ export const liveAdapter = {
     return null;
   },
   async apply(operation: ChangeOperation) {
+    if (operation.kind === "media_plan") return executeMediaPlan(operation.steps as MediaStep[], operation.accountKeys);
     if (operation.channel === "naver_gfa") throw new Error("네이버 GFA 변경 API 규격 확인 전에는 변경할 수 없습니다.");
     if (operation.kind === "create_text_ad") throw new Error("네이버 SA 소재 생성은 트래킹 템플릿 검증 후 지원됩니다.");
     const key = unpack(operation.id);

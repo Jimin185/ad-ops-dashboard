@@ -22,6 +22,9 @@ const SYSTEM_PROMPT = `당신은 광고대행사의 광고 운영 어시스턴�
 - 월별 미디어 믹스: get_mixes로 기존 믹스와 회고를, get_report로 실적을 확인한 뒤 propose_mix로 초안을 올리세요. 초안은 사용자가 카드에서 확인해야 저장됩니다.
 - 믹스 대비 성과·예산 조정은 get_mixes의 currentMonthLines(라인별 집행액·ROAS·연결 캠페인 ID)를 먼저 쓰세요. 이미 계산된 값이라 캠페인 전체 조회가 필요 없습니다.
 - 믹스대로 예산을 맞추는 요청은 (라인 월예산 - 집행액) ÷ 남은 일수를 라인의 운영 중 캠페인에 나눠 일예산 변경안(update_budget)으로 만드세요. Google Ads 예산 변경은 아직 지원되지 않으니 안내만 하세요.
+- 매체 세팅(캠페인·광고그룹·소재 생성/복제/수정, 타겟·입찰·키워드 변경)은 모든 매체에서 가능합니다. 전용 도구(update_budget, set_status)로 되는 건 그걸 쓰고, 나머지는 media_api_get으로 구조를 확인한 뒤 propose_media_plan으로 단계 묶음을 올리세요. "할 수 없다"고 답하기 전에 반드시 이 방법을 검토하세요.
+- 새로 만드는 항목은 사용자가 켜라고 하지 않는 한 꺼진 상태로 만드세요. 삭제는 사용자가 명시적으로 요청한 경우만 하세요.
+- 승인 후 실행 결과(생성된 ID 등)는 대화에 표시됩니다. 실패하면 오류 메시지를 보고 수정한 변경안을 다시 올리세요.
 - 소재 제작 요청에는 채널 규격에 맞는 카피 시안(헤드라인·설명·CTA)을 여러 안으로 제시하세요.
 - 답은 간결한 한국어로, 비교 데이터는 마크다운 표로 보여주세요.`;
 
@@ -56,7 +59,7 @@ async function handle(request: Request) {
     const usage = { input: 0, output: 0, cached: 0 };
 
     // 사용자가 중지를 누르면(연결 끊김) 다음 단계로 넘어가지 않고, 진행 중인 Claude 호출도 취소한다.
-    for (let iteration = 0; iteration < 8; iteration += 1) {
+    for (let iteration = 0; iteration < 12; iteration += 1) {
       if (request.signal.aborted) return new Response(null, { status: 499 });
       const response = await anthropic.beta.messages.create({
         model: "claude-opus-5-5",

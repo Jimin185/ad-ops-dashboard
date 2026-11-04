@@ -1,5 +1,5 @@
 import { getAdapter } from "@/lib/adapters";
-import { getDailyReport } from "@/lib/adapters/live";
+import { assertMediaScope, executeMediaStep, getDailyReport } from "@/lib/adapters/live";
 import { sanitizeMix, type MediaMix } from "@/lib/mix";
 import { createPendingAction } from "@/lib/pending";
 import type { Channel, ChangeOperation, EntityType, PendingAction } from "@/lib/types";
@@ -114,6 +114,51 @@ export const assistantTools = [
     },
   },
   {
+    name: "media_api_get",
+    description: "매체 API 조회(GET)를 바로 실행합니다. 세팅 전에 기존 캠페인·광고그룹·소재·타겟·크리에이티브 구조를 확인할 때 씁니다. 결과는 앞부분 12,000자까지만 돌려줍니다 — fields/필터를 좁혀 요청하세요.\n- meta: Graph API 경로 (예: act_{계정}/campaigns, {광고ID}?fields=name,adset_id,creative{id,object_story_spec}). 쿼리는 path에 붙이거나 bodyJson에 객체로.\n- google_ads: customers/{계정}/googleAds:search 는 POST라 조회도 propose 없이 이 도구에서 method 대신 GAQL을 bodyJson {\"query\":...}로 넣으면 POST로 실행됩니다.\n- naver_sa: /ncc/campaigns, /ncc/adgroups?nccCampaignId=, /ncc/keywords?nccAdgroupId=, /ncc/ads?nccAdgroupId= 등.\n- naver_gfa: /adAccounts/{계정}/campaigns, /adAccounts/{계정}/adSets, /adAccounts/{계정}/creatives 등.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
+        accountId: { type: "string", description: "매핑된 광고계정 ID (숫자)" },
+        path: { type: "string" },
+        bodyJson: { type: "string", description: "쿼리 파라미터 또는 GAQL을 담은 JSON 문자열. 없으면 빈 문자열" },
+      },
+      required: ["channel", "accountId", "path", "bodyJson"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "propose_media_plan",
+    description: "매체 세팅 변경안(생성·복제·수정·삭제)을 단계 묶음으로 만듭니다. 사용자가 확인 카드에서 승인하면 순서대로 실행되고, 실패하면 그 단계에서 멈춥니다. 뒤 단계에서 앞 단계 결과를 \"{{0.id}}\"처럼 참조할 수 있습니다(0부터 시작).\n규칙: 새로 만드는 캠페인·광고그룹·광고는 기본적으로 꺼진 상태(PAUSED/userLock true)로 만드세요(사용자가 켜라고 한 경우 제외). 먼저 media_api_get으로 기존 구조를 확인하고 정확한 필드로 요청하세요.\n- meta: 쓰기는 POST {경로} + form 필드(bodyJson의 객체 값은 JSON으로 전송). 예) 소재 복제 POST {광고ID}/copies {\"adset_id\":\"...\",\"status_option\":\"PAUSED\",\"rename_options\":{\"rename_suffix\":\" - 복사본\"}}, 수정 POST {객체ID} {필드}, 생성 POST act_{계정}/campaigns|adsets|ads|adcreatives.\n- google_ads: POST customers/{계정}/{리소스}:mutate {\"operations\":[...]} (campaignBudgets, campaigns, adGroups, adGroupAds, adGroupCriteria 등).\n- naver_sa: POST /ncc/campaigns|adgroups|keywords?nccAdgroupId=|ads, PUT /ncc/{리소스}/{id}?fields=... (변경 필드만 fields에).\n- naver_gfa: /adAccounts/{계정}/... 리소스에 POST/PUT/PATCH.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "사용자에게 보여줄 한 줄 요약 (무엇을 어디에 만드는지/바꾸는지)" },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads"] },
+              accountId: { type: "string" },
+              method: { type: "string", enum: ["POST", "PUT", "PATCH", "DELETE"] },
+              path: { type: "string" },
+              bodyJson: { type: "string", description: "요청 본문 JSON 문자열, 없으면 빈 문자열" },
+              note: { type: "string", description: "이 단계가 하는 일 (한국어)" },
+            },
+            required: ["channel", "accountId", "method", "path", "bodyJson", "note"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["summary", "steps"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "update_budget",
     description: "캠페인 또는 광고그룹의 일예산 변경안을 생성합니다. 실제 변경은 사용자의 별도 승인이 필요합니다.",
     strict: true,
@@ -193,6 +238,24 @@ export async function executeAssistantTool(name: string, input: ToolInput, ctx: 
     const slim = rows.sort((a, b) => b.spend - a.spend).slice(0, 150).map((row) => ({ id: row.id, channel: row.channel, account: row.accountName, name: row.name, dailyBudget: row.dailyBudget, status: row.status, spend: Math.round(row.spend), conversions: row.conversions, roas: row.roas }));
     return { result: { total: rows.length, shown: slim.length, campaigns: slim } };
   }
+  if (name === "media_api_get") {
+    const body = parseJsonArg(input.bodyJson);
+    const isGaql = input.channel === "google_ads" && body && typeof body === "object" && "query" in (body as object);
+    const step = { channel: input.channel as Channel, accountId: String(input.accountId).replace(/[^0-9]/g, ""), method: (isGaql ? "POST" : "GET") as "GET" | "POST", path: String(input.path), body };
+    if (isGaql && !/googleAds:search(Stream)?$/.test(step.path.split("?")[0])) return { result: { error: "Google 조회는 customers/{계정}/googleAds:search 경로만 가능합니다." } };
+    await assertMediaScope(step, ctx.accountKeys);
+    const raw = JSON.stringify(await executeMediaStep(step));
+    return { result: raw.length > 12000 ? `${raw.slice(0, 12000)}… (잘림: 전체 ${raw.length}자, 필드를 좁혀 다시 조회하세요)` : JSON.parse(raw) };
+  }
+  if (name === "propose_media_plan") {
+    const steps = ((input.steps as any[]) || []).slice(0, 30).map((s) => ({ channel: s.channel as Channel, accountId: String(s.accountId).replace(/[^0-9]/g, ""), method: s.method, path: String(s.path), body: parseJsonArg(s.bodyJson), note: String(s.note || "") }));
+    if (!steps.length) return { result: { error: "단계가 없습니다." } };
+    // 승인 전에 계정 범위를 미리 확인 (앞 단계 결과를 참조하는 경로는 실행 시점에 다시 확인)
+    for (const step of steps) if (!step.path.includes("{{")) await assertMediaScope(step, ctx.accountKeys);
+    const pending = createPendingAction(String(input.summary || "매체 세팅"), { kind: "media_plan", channel: steps[0].channel, summary: String(input.summary || ""), steps, accountKeys: ctx.accountKeys },
+      steps.map((step, i) => ({ targetId: `${i}`, targetName: `${i + 1}. ${step.note}`, field: `${step.method} ${step.channel}`, before: step.path, after: step.body === undefined ? "" : JSON.stringify(step.body).slice(0, 600) })));
+    return { result: { status: "pending_user_confirmation", steps: steps.length, pendingId: pending.id }, pending };
+  }
   if (name === "get_report") {
     if (!ctx.accountKeys.length) return { result: { error: "선택한 광고주에 매핑된 계정이 없습니다." } };
     const report = await getDailyReport(ctx.accountKeys, String(input.since), String(input.until));
@@ -253,4 +316,10 @@ export async function executeAssistantTool(name: string, input: ToolInput, ctx: 
     { targetId: entity.id, targetName: entity.name, field, before, after },
   ]);
   return { result: { status: "pending_user_confirmation", pendingId: pending.id }, pending };
+}
+
+function parseJsonArg(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return undefined;
+  try { return JSON.parse(text); } catch { throw new Error("bodyJson이 올바른 JSON이 아닙니다."); }
 }

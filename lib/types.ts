@@ -64,7 +64,10 @@ export type StatsRow = {
   roas: number;
 };
 
+export type MediaPlanStep = { channel: Channel; accountId: string; method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; path: string; body?: unknown; note?: string };
+
 export type ChangeOperation =
+  | { kind: "media_plan"; channel: Channel; summary: string; steps: MediaPlanStep[]; accountKeys: string[] }
   | { kind: "update_budget"; channel: Channel; entityType: EntityType; id: string; dailyBudget: number }
   | { kind: "set_status"; channel: Channel; entityType: EntityType; id: string; status: EntityStatus }
   | {

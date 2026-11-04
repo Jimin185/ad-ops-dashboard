@@ -73,6 +73,7 @@ export const mockAdapter = {
       ads.push(...created);
       return { success: true, changed: created.length, data: created };
     }
+    if (operation.kind === "media_plan") return { success: false, completed: 0, error: "데모 모드에서는 매체 세팅을 실행할 수 없습니다." };
     const collection = operation.entityType === "campaign" ? campaigns : operation.entityType === "adgroup" ? adgroups : ads;
     const entity = collection.find((row) => row.id === operation.id && row.channel === operation.channel);
     if (!entity) throw new Error("변경 대상을 찾을 수 없습니다.");
