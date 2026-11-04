@@ -76,3 +76,22 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
   .account-list small { grid-column: 3; }
   .header-actions { justify-content: flex-start; }
 }
+
+.tab-count { margin-left: 4px; font-size: 11px; opacity: .7; }
+.account-search { width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font: inherit; }
+.account-list label.taken { cursor: not-allowed; opacity: .55; background: #f6f7f5; }
+.owner-tag { margin-left: 8px; padding: 2px 7px; border-radius: 6px; background: #eef0ec; color: var(--muted); font-size: 11px; font-style: normal; font-weight: 600; }
+.sa-register { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fbfcfa; }
+.sa-register > div:first-child { display: grid; gap: 4px; }
+.sa-register > div:first-child span { color: var(--muted); font-size: 13px; }
+.sa-form { display: grid; grid-template-columns: 1fr 140px 1.4fr 1.4fr auto; gap: 8px; }
+.sa-form input { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font: inherit; }
+.sa-status.error { color: #b3261e; }
+.sa-status.done { color: #087a41; }
+.sa-registered { display: flex; flex-wrap: wrap; gap: 8px; }
+.sa-registered span { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: 13px; }
+.sa-registered small { color: var(--muted); }
+.sa-registered button { width: 22px; height: 22px; border: 0; border-radius: 50%; background: #eef0ec; cursor: pointer; }
+@media (max-width: 760px) { .sa-form { grid-template-columns: 1fr; } }
+.naver_gfa { background:#e6f4ff; color:#1f5fa8; }
+.google_ads { background:#fff4e0; color:#a35a00; }

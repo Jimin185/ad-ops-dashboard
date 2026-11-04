@@ -1,3 +1,4 @@
+import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import Anthropic from "@anthropic-ai/sdk";
 import { assistantTools, executeAssistantTool } from "@/lib/assistant-tools";
 import type { PendingAction } from "@/lib/types";
@@ -18,6 +19,10 @@ function friendlyError(error: unknown) {
 }
 
 export async function POST(request: Request) {
+  return withNaverSaAccounts(request, () => handle(request));
+}
+
+async function handle(request: Request) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return Response.json({ error: "API 키 등록 필요", code: "ANTHROPIC_API_KEY_REQUIRED" }, { status: 503 });
   }

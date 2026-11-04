@@ -1,9 +1,14 @@
+import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import { getAdapter } from "@/lib/adapters";
 import { getLiveSnapshot } from "@/lib/adapters/live";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  return withNaverSaAccounts(request, () => handle());
+}
+
+async function handle() {
   try {
     if (process.env.ADAPTER_MODE === "live") {
       const snapshot = await getLiveSnapshot(true);

@@ -1,8 +1,13 @@
+import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import { getAdapter } from "@/lib/adapters";
 import { createPendingAction } from "@/lib/pending";
 import type { ChangeOperation } from "@/lib/types";
 
 export async function POST(request: Request) {
+  return withNaverSaAccounts(request, () => handle(request));
+}
+
+async function handle(request: Request) {
   try {
     const operation = (await request.json()) as ChangeOperation;
     if (operation.kind !== "update_budget" && operation.kind !== "set_status") {
