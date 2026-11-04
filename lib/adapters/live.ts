@@ -241,10 +241,12 @@ async function gfaGet(path: string, params: Record<string, string> = {}) {
   }
   return body;
 }
-// 과거 성과(past) API는 어제까지만 조회되므로, 이번 달 1일 ~ 어제 범위를 쓴다. 1일이면 조회하지 않는다.
+// 과거 성과(past) API는 어제까지만 조회되고, 어제 데이터는 KST 새벽 2시 이후에 열린다.
+// 그래서 이번 달 1일 ~ 어제(새벽 3시 전이면 그제) 범위를 쓴다. 범위가 비면 조회하지 않는다.
 function gfaPastRange() {
   const { since, until } = monthRange();
-  const y = new Date(`${until}T00:00:00Z`); y.setUTCDate(y.getUTCDate() - 1);
+  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", hour: "numeric", hourCycle: "h23" }).format(new Date()));
+  const y = new Date(`${until}T00:00:00Z`); y.setUTCDate(y.getUTCDate() - (hour < 3 ? 2 : 1));
   const yesterday = y.toISOString().slice(0, 10);
   return yesterday < since ? null : { startDate: since, endDate: yesterday, timeUnit: "daily" };
 }
