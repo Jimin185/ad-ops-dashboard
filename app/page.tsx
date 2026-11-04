@@ -6,10 +6,11 @@ import { matchMix, mixTotalBudget } from "@/lib/mix";
 import { ReportView } from "./report-view";
 import { MixView } from "./mix-view";
 import { CreativeView } from "./creative-view";
+import { SaView } from "./sa-view";
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type ChatMessage = { role: "user" | "assistant"; content: string; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
-type DashTab = "report" | "mix" | "creative" | "ops";
+type DashTab = "report" | "mix" | "creative" | "sa" | "ops";
 const MIX_STORAGE = "adops-mixes";
 
 type RegisteredNaverSa = { id: string; name: string; token: string };
@@ -467,7 +468,7 @@ export default function Dashboard() {
       </header>
 
       <nav className="view-tabs" aria-label="화면 전환">
-        {([["report", "리포트"], ["mix", "미디어 믹스"], ["creative", "소재 성과"], ["ops", "운영 설정"]] as Array<[DashTab, string]>).map(([key, label]) => <button key={key} className={dashTab === key ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
+        {([["report", "리포트"], ["mix", "미디어 믹스"], ["creative", "소재 성과"], ["sa", "SA 분석"], ["ops", "운영 설정"]] as Array<[DashTab, string]>).filter(([key]) => key !== "sa" || selectedAdvertiser?.accountKeys.some((k) => k.startsWith("naver_sa:"))).map(([key, label]) => <button key={key} className={dashTab === key ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
         <span className={`storage-badge ${storageMode}`} title={storageError || undefined}>{storageMode === "supabase" ? "Supabase 저장" : storageMode === "local" ? "이 브라우저에만 저장" : "…"}</span>
       </nav>
       {storageError && <div className="connection-error"><b>저장소 오류</b><span>{storageError}</span></div>}
@@ -475,6 +476,7 @@ export default function Dashboard() {
 
       {dashTab === "report" && <ReportView accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
       {dashTab === "mix" && selectedAdvertiser && <MixView campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
+      {dashTab === "sa" && <SaView apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
       {dashTab === "creative" && <CreativeView accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} />}
       {dashTab === "ops" && <>
       <section className="metrics">

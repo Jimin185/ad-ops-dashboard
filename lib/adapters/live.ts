@@ -599,24 +599,116 @@ export async function naverStatReport(customerId: string, reportTp: string, stat
   return "pending";
 }
 
-// TEMP: 네이버 SA 리포트 컬럼 구조 확인용
-export async function debugSaReports(customerId: string, statDt: string) {
-  const out: Record<string, unknown> = {};
-  for (const tp of ["AD", "AD_CONVERSION", "SHOPPINGKEYWORD_DETAIL", "SHOPPINGKEYWORD_CONVERSION_DETAIL", "AD_DETAIL", "EXPKEYWORD"]) {
-    try { const rows = await naverStatReport(customerId, tp, statDt, 20_000); out[tp] = rows === "pending" ? "pending" : { count: rows.length, sample: rows.slice(0, 3) }; }
-    catch (error) { out[tp] = { error: error instanceof Error ? error.message : String(error) }; }
+// ---- 네이버 SA 상세 분석 (키워드·소재·쇼핑 검색어·제품) ----
+// 하루치 리포트 4종을 받아 (캠페인|그룹|키워드/검색어|소재) 단위로 합쳐서 날짜별로 캐시한다.
+// 값 배열: [노출, 클릭, 비용, 구매수, 구매매출, 장바구니수]
+type SaVals = [number, number, number, number, number, number];
+type SaDay = { ad: Record<string, SaVals>; term: Record<string, SaVals> };
+const addVals = (map: Record<string, SaVals>, key: string, i: number, v: number) => { (map[key] ||= [0, 0, 0, 0, 0, 0])[i] += v; };
+
+async function saDay(customerId: string, date: string, force: boolean): Promise<SaDay | "pending"> {
+  const key = `sa-day:${customerId}:${date}`;
+  const cached = await cacheGet<SaDay & { at: string }>(key);
+  if (cached) {
+    const finalOk = isFinalDate(date) && new Date(cached.value.at).getTime() >= new Date(`${date}T00:00:00Z`).getTime() + 3 * 86400_000;
+    if (finalOk || (!force && new Date(cached.value.at).getTime() >= nextDailyRefresh() - 24 * 3600_000)) return cached.value;
   }
-  const campaigns = await naverRequest("GET", "/ncc/campaigns", undefined, customerId) as any[];
-  out.campaignTypes = [...new Set(campaigns.map((c) => c.campaignTp))];
-  for (const tp of ["WEB_SITE", "SHOPPING"]) {
-    const camp = campaigns.find((c) => c.campaignTp === tp && c.status === "ELIGIBLE");
-    if (!camp) continue;
-    const groups = await naverRequest("GET", `/ncc/adgroups?nccCampaignId=${camp.nccCampaignId}`, undefined, customerId) as any[];
-    const ads = groups[0] ? await naverRequest("GET", `/ncc/ads?nccAdgroupId=${groups[0].nccAdgroupId}`, undefined, customerId) as any[] : [];
-    out[`ad_${tp}`] = JSON.stringify(ads[0] || null).slice(0, 1500);
-    out[`group_${tp}`] = JSON.stringify(groups[0] || null).slice(0, 600);
+  const [ad, adConv, term, termConv] = await Promise.all(["AD", "AD_CONVERSION", "SHOPPINGKEYWORD_DETAIL", "SHOPPINGKEYWORD_CONVERSION_DETAIL"].map((tp) => naverStatReport(customerId, tp, date, 35_000)));
+  if ([ad, adConv, term, termConv].some((r) => r === "pending")) return "pending";
+  const day: SaDay = { ad: {}, term: {} };
+  for (const r of ad as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; addVals(day.ad, k, 0, num(r[9])); addVals(day.ad, k, 1, num(r[10])); addVals(day.ad, k, 2, num(r[11])); }
+  for (const r of adConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[10] === "purchase") { addVals(day.ad, k, 3, num(r[11])); addVals(day.ad, k, 4, num(r[12])); } else if (r[10] === "add_to_cart") addVals(day.ad, k, 5, num(r[11])); }
+  for (const r of term as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; addVals(day.term, k, 0, num(r[11])); addVals(day.term, k, 1, num(r[12])); addVals(day.term, k, 2, num(r[13])); }
+  for (const r of termConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[12] === "purchase") { addVals(day.term, k, 3, num(r[13])); addVals(day.term, k, 4, num(r[14])); } else if (r[12] === "add_to_cart") addVals(day.term, k, 5, num(r[13])); }
+  await cacheSet(key, { ...day, at: new Date().toISOString() }, isFinalDate(date) ? null : nextDailyRefresh() + 7 * 86400_000);
+  return day;
+}
+
+async function saNames(customerId: string, path: "adgroups" | "keywords" | "ads", ids: string[]) {
+  const key = `sa-names:${customerId}:${path}`;
+  const known = (await cacheGet<Record<string, any>>(key))?.value || {};
+  const missing = ids.filter((id) => id && id !== "-" && !(id in known));
+  for (let i = 0; i < missing.length; i += 20) {
+    const chunk = missing.slice(i, i + 20);
+    try {
+      const rows = await naverRequest("GET", `/ncc/${path}?ids=${chunk.join(",")}`, undefined, customerId) as any[];
+      for (const row of rows || []) {
+        if (path === "adgroups") known[row.nccAdgroupId] = { name: row.name, active: !row.userLock && row.status !== "PAUSED" };
+        else if (path === "keywords") known[row.nccKeywordId] = { name: row.keyword, active: !row.userLock };
+        else {
+          const ref = row.referenceData || {};
+          known[row.nccAdId] = { type: row.type, headline: row.ad?.headline, description: row.ad?.description, product: ref.productName || ref.productTitle, image: ref.imageUrl, price: num(ref.lowPrice || ref.mobilePrice), category: ref.fullMallCatNm, active: !row.userLock && row.status !== "PAUSED" };
+        }
+      }
+      for (const id of chunk) if (!(id in known)) known[id] = null;
+    } catch { break; }
   }
-  return out;
+  if (missing.length) await cacheSet(key, known, nextDailyRefresh() + 6 * 86400_000);
+  return known;
+}
+
+export type SaRow = { imp: number; clk: number; cost: number; conv: number; revenue: number; cart: number };
+const toRow = (v: SaVals): SaRow => ({ imp: v[0], clk: v[1], cost: v[2], conv: v[3], revenue: v[4], cart: v[5] });
+
+/** 기간의 SA 상세 분석. 시간이 걸리는 날짜가 남으면 status: "loading"으로 진행률만 돌려주고, 다시 부르면 이어서 받는다. */
+export async function getSaInsights(customerId: string, since: string, until: string, force = false) {
+  const dates = eachDate(since, until);
+  const started = Date.now();
+  const days: SaDay[] = [];
+  let pending = 0;
+  for (let i = 0; i < dates.length; i += 3) {
+    if (Date.now() - started > 40_000) { pending += dates.length - i; break; }
+    const batch = await Promise.all(dates.slice(i, i + 3).map((d) => saDay(customerId, d, force).catch(() => "pending" as const)));
+    for (const d of batch) if (d === "pending") pending++; else days.push(d);
+  }
+  if (pending) return { status: "loading" as const, ready: dates.length - pending, total: dates.length };
+
+  const ad: Record<string, SaVals> = {}, term: Record<string, SaVals> = {};
+  for (const d of days) {
+    for (const [k, v] of Object.entries(d.ad)) v.forEach((x, i) => addVals(ad, k, i, x));
+    for (const [k, v] of Object.entries(d.term)) v.forEach((x, i) => addVals(term, k, i, x));
+  }
+  const campaigns = (await naverRequest("GET", "/ncc/campaigns", undefined, customerId)) as any[];
+  const campaignInfo = Object.fromEntries(campaigns.map((c) => [c.nccCampaignId, { name: c.name, type: c.campaignTp }]));
+  const sum = (entries: Array<[string, SaVals]>, keyOf: (parts: string[]) => string) => {
+    const out: Record<string, SaVals> = {};
+    for (const [k, v] of entries) { const g = keyOf(k.split("|")); v.forEach((x, i) => addVals(out, g, i, x)); }
+    return out;
+  };
+  const adEntries = Object.entries(ad);
+  const byGroup = sum(adEntries, (p) => `${p[0]}|${p[1]}`);
+  const byKeyword = sum(adEntries.filter(([k]) => k.split("|")[2] !== "-"), (p) => `${p[0]}|${p[1]}|${p[2]}`);
+  const byAd = sum(adEntries, (p) => `${p[0]}|${p[1]}|${p[3]}`);
+  const byTerm = sum(Object.entries(term), (p) => `${p[0]}|${p[1]}|${p[2]}`);
+  const top = (m: Record<string, SaVals>, n: number) => Object.entries(m).sort((a, b) => b[1][2] - a[1][2] || b[1][0] - a[1][0]).slice(0, n);
+
+  const groupsTop = top(byGroup, 400), keywordsTop = top(byKeyword, 600), adsTop = top(byAd, 600);
+  const [groupNames, keywordNames, adInfo] = await Promise.all([
+    saNames(customerId, "adgroups", groupsTop.map(([k]) => k.split("|")[1])),
+    saNames(customerId, "keywords", keywordsTop.slice(0, 300).map(([k]) => k.split("|")[2])),
+    saNames(customerId, "ads", adsTop.filter(([k]) => /SHOPPING|WEB_SITE/.test(campaignInfo[k.split("|")[0]]?.type || "")).slice(0, 300).map(([k]) => k.split("|")[2])),
+  ]);
+  const base = (cmp: string, grp: string) => ({ campaignId: cmp, campaign: campaignInfo[cmp]?.name || cmp, type: campaignInfo[cmp]?.type || "", adgroupId: grp, adgroup: groupNames[grp]?.name || grp });
+
+  const adRows = adsTop.map(([k, v]) => { const [cmp, grp, id] = k.split("|"); return { ...base(cmp, grp), id, info: adInfo[id] || null, ...toRow(v) }; });
+  // 제품 = 쇼핑검색 캠페인의 소재(상품). 같은 상품이 여러 그룹에 있으면 합친다.
+  const products: Record<string, any> = {};
+  for (const r of adRows.filter((r) => r.type === "SHOPPING" && r.info?.product)) {
+    const p = (products[r.info.product] ||= { name: r.info.product, image: r.info.image, price: r.info.price, category: r.info.category, groups: new Set<string>(), imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0, cart: 0 });
+    p.groups.add(r.adgroup); for (const f of ["imp", "clk", "cost", "conv", "revenue", "cart"] as const) p[f] += r[f];
+  }
+  const typeTotals: Record<string, SaVals> = {};
+  for (const [k, v] of adEntries) { const t = campaignInfo[k.split("|")[0]]?.type || "기타"; v.forEach((x, i) => addVals(typeTotals, t, i, x)); }
+
+  return {
+    status: "ready" as const, since, until,
+    typeTotals: Object.entries(typeTotals).map(([type, v]) => ({ type, ...toRow(v) })),
+    adgroups: groupsTop.map(([k, v]) => { const [cmp, grp] = k.split("|"); return { ...base(cmp, grp), active: groupNames[grp]?.active ?? true, ...toRow(v) }; }),
+    keywords: keywordsTop.map(([k, v]) => { const [cmp, grp, kw] = k.split("|"); return { ...base(cmp, grp), id: kw, keyword: keywordNames[kw]?.name || "(이름 미조회)", active: keywordNames[kw]?.active ?? true, ...toRow(v) }; }),
+    powerlinkAds: adRows.filter((r) => r.type === "WEB_SITE" && r.id !== "-").map((r) => ({ ...r, headline: r.info?.headline, description: r.info?.description, active: r.info?.active ?? true, info: undefined })),
+    searchTerms: top(byTerm, 800).map(([k, v]) => { const [cmp, grp, t] = k.split("|"); return { ...base(cmp, grp), term: t, ...toRow(v) }; }),
+    products: Object.values(products).map((p) => ({ ...p, groups: [...p.groups] })).sort((a, b) => b.cost - a.cost),
+  };
 }
 
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
