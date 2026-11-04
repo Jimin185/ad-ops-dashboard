@@ -179,6 +179,7 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showTable, setShowTable] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const range = useMemo(() => periodRange(period), [period]);
   const mix = mixes.find((m) => m.month === range.month) || null;
   const keysSignature = accountKeys.join(",");
@@ -187,13 +188,13 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch 
     if (!accountKeys.length) { setReport(null); return; }
     let cancelled = false;
     setLoading(true); setError("");
-    apiFetch("/api/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts: accountKeys, since: range.since, until: range.until }) })
+    apiFetch("/api/report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts: accountKeys, since: range.since, until: range.until, refresh: reloadKey > 0 }) })
       .then(async (response) => { const data = await response.json(); if (cancelled) return; if (!response.ok) setError(data.error || "리포트를 불러오지 못했습니다."); else setReport(data); })
       .catch(() => !cancelled && setError("리포트를 불러오지 못했습니다."))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [keysSignature, range.since, range.until]);
+  }, [keysSignature, range.since, range.until, reloadKey]);
 
   const rows: DailyRow[] = report?.rows || [];
   const channels = CHANNEL_ORDER.filter((c) => accountKeys.some((key) => key.startsWith(`${c}:`)));
@@ -231,7 +232,8 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch 
     <section className="report viz-root">
       <div className="report-toolbar">
         <nav className="channel-tabs">{PERIODS.map((p) => <button key={p.key} className={period === p.key ? "active" : ""} onClick={() => setPeriod(p.key)}>{p.label}</button>)}</nav>
-        <span className="report-range">{range.since} ~ {range.until}{loading ? " · 불러오는 중…" : ""}</span>
+        <span className="report-range">{range.since} ~ {range.until}{loading ? " · 불러오는 중…" : (report as any)?.fetchedAt ? ` · ${new Date((report as any).fetchedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 수집 데이터` : ""}
+          <button className="link-button" disabled={loading} onClick={() => setReloadKey((k) => k + 1)}>새로 가져오기</button></span>
       </div>
       {error && <div className="connection-error"><b>리포트 오류</b><span>{error}</span></div>}
       {!!report?.errors.length && <div className="connection-error"><b>일부 계정 조회 실패</b>{report.errors.map((e) => <span key={`${e.channel}:${e.accountId}`}>{CHANNEL_LABEL[e.channel]} {e.accountId}: {e.message}</span>)}</div>}

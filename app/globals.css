@@ -220,3 +220,8 @@ header p,.panel-head p { color:var(--muted); margin:0; font-size:14px; }
 .line-campaigns em { font-style:normal; color:var(--muted); white-space:nowrap; } .line-campaigns .muted { color:var(--muted); }
 .unassigned { margin-top:14px; } .unassigned summary { cursor:pointer; font-size:13px; font-weight:700; color:#8a5a00; margin-bottom:10px; }
 .lines-table th, .lines-table td:nth-child(6), .lines-table td:nth-child(9) { white-space:nowrap; }
+
+.composer .stop-button { background:var(--critical); border-color:var(--critical); color:#fff; }
+.usage-note { display:block; margin-top:6px; font-size:10px; color:var(--muted); }
+.fetched-at { color:var(--muted); font-size:12px; margin-right:8px; }
+.report-range .link-button { margin-left:8px; }

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { cacheGet, cacheSet, isFinalDate, nextDailyRefresh } from "@/lib/cache";
 import { registeredNaverSa } from "@/lib/naver-sa-registry";
 import type { Ad, AdAccount, AdGroup, Campaign, Channel, ChangeOperation, ConnectionStatus, CreativeRow, DailyRow, EntityStatus, EntityType, ReportResult, StatsRow } from "@/lib/types";
 
@@ -454,17 +455,52 @@ const dailyFetchers: Record<Channel, (accountId: string, since: string, until: s
   google_ads: googleDaily, meta: metaDaily, naver_gfa: gfaDaily, naver_sa: naverDaily,
 };
 
+type DailyBucket = { rows: Record<string, DailyRow>; covered: Record<string, string> }; // covered: 날짜 → 가져온 시각(ISO)
+
+/**
+ * 계정 하나의 일자별 성과. 월 단위 버킷으로 저장한다.
+ * - 확정 날짜(이번 주 월요일 이전)는 한 번 가져오면 다시 부르지 않는다 (적재).
+ * - 그 외 날짜는 오늘 오전 6시(KST) 이후에 가져온 적 있으면 재사용한다 (하루 한 번).
+ */
+async function cachedDaily(channel: Channel, accountId: string, since: string, until: string, force: boolean) {
+  const months = [...new Set(eachDate(since, until).map((d) => d.slice(0, 7)))];
+  const buckets: Record<string, DailyBucket> = {};
+  for (const month of months) buckets[month] = (await cacheGet<DailyBucket>(`daily:${channel}:${accountId}:${month}`))?.value || { rows: {}, covered: {} };
+  const refreshFloor = nextDailyRefresh() - 24 * 3600_000;
+  const usable = (date: string) => {
+    const at = buckets[date.slice(0, 7)].covered[date];
+    if (!at) return false;
+    if (isFinalDate(date) && new Date(at).getTime() >= new Date(`${date}T00:00:00Z`).getTime() + 3 * 86400_000) return true; // 확정 + 3일 이상 지나서 수집
+    return !force && new Date(at).getTime() >= refreshFloor;
+  };
+  const missing = eachDate(since, until).filter((d) => !usable(d));
+  let fetched = 0;
+  if (missing.length) {
+    const from = missing[0], to = missing[missing.length - 1];
+    const rows = await dailyFetchers[channel](accountId, from, to);
+    const stamp = new Date().toISOString();
+    for (const date of eachDate(from, to)) { const b = buckets[date.slice(0, 7)]; if (!b) continue; b.covered[date] = stamp; delete b.rows[date]; }
+    for (const row of rows) { const b = buckets[row.date?.slice(0, 7)]; if (b && row.date >= from && row.date <= to) b.rows[row.date] = row; }
+    for (const month of months) await cacheSet(`daily:${channel}:${accountId}:${month}`, buckets[month], null);
+    fetched = missing.length;
+  }
+  const rows = eachDate(since, until).map((d) => buckets[d.slice(0, 7)].rows[d]).filter(Boolean) as DailyRow[];
+  const oldest = Math.min(...eachDate(since, until).map((d) => new Date(buckets[d.slice(0, 7)].covered[d] || Date.now()).getTime()));
+  return { rows, fetched, oldest };
+}
+
 /** accountKeys: "channel:accountId" 목록. 일자별·채널별·계정별 성과를 돌려준다. */
-export async function getDailyReport(accountKeys: string[], since: string, until: string): Promise<ReportResult> {
+export async function getDailyReport(accountKeys: string[], since: string, until: string, force = false): Promise<ReportResult & { fetchedAt: string; apiCalls: number }> {
   const targets = [...new Set(accountKeys)].map((key) => { const [channel, ...rest] = key.split(":"); return { channel: channel as Channel, accountId: rest.join(":") }; })
     .filter((t) => t.accountId && t.channel in dailyFetchers);
   const errors: ReportResult["errors"] = [];
+  let apiCalls = 0, oldest = Date.now();
   const results = await Promise.all(targets.map(async (t) => {
-    try { return await dailyFetchers[t.channel](t.accountId, since, until); }
+    try { const r = await cachedDaily(t.channel, t.accountId, since, until, force); if (r.fetched) apiCalls++; oldest = Math.min(oldest, r.oldest); return r.rows; }
     catch (error) { errors.push({ ...t, message: error instanceof Error ? error.message : String(error) }); return []; }
   }));
   const rows = results.flat().filter((row) => row.date >= since && row.date <= until).sort((a, b) => a.date.localeCompare(b.date));
-  return { since, until, rows, errors };
+  return { since, until, rows, errors, fetchedAt: new Date(oldest).toISOString(), apiCalls };
 }
 export { eachDate };
 
@@ -520,15 +556,24 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
   }).filter((row) => row.spend > 0).sort((a, b) => b.spend - a.spend).slice(0, 60);
 }
 
-export async function getCreativeReport(accountKeys: string[], since: string, until: string) {
+export async function getCreativeReport(accountKeys: string[], since: string, until: string, force = false) {
   const targets = [...new Set(accountKeys)].map((key) => { const [channel, ...rest] = key.split(":"); return { channel: channel as Channel, accountId: rest.join(":") }; })
     .filter((t) => t.channel === "meta" || t.channel === "naver_gfa");
   const errors: Array<{ channel: Channel; accountId: string; message: string }> = [];
+  let oldest = Date.now();
   const rows = (await Promise.all(targets.map(async (t) => {
-    try { return t.channel === "meta" ? await metaCreatives(t.accountId, since, until) : await gfaCreatives(t.accountId, since, until); }
+    // 지난 주 이전 기간은 영구 적재, 그 외는 하루 한 번 갱신
+    const key = `creative:${t.channel}:${t.accountId}:${since}:${until}`;
+    const cached = force ? null : await cacheGet<CreativeRow[]>(key);
+    if (cached) { oldest = Math.min(oldest, cached.updatedAt); return cached.value; }
+    try {
+      const rows = t.channel === "meta" ? await metaCreatives(t.accountId, since, until) : await gfaCreatives(t.accountId, since, until);
+      await cacheSet(key, rows, isFinalDate(until) ? null : nextDailyRefresh());
+      return rows;
+    }
     catch (error) { errors.push({ ...t, message: error instanceof Error ? error.message : String(error) }); return []; }
   }))).flat();
-  return { since, until, rows, errors };
+  return { since, until, rows, errors, fetchedAt: new Date(oldest).toISOString() };
 }
 
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
