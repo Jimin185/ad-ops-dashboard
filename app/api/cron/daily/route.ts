@@ -28,6 +28,7 @@ export async function GET(request: Request) {
         const snapshot = await getLiveSnapshot(true);
         await cacheSet(`campaigns:${new Date().toISOString().slice(0, 7)}:${createHash("sha1").update("").digest("hex").slice(0, 12)}`, snapshot, Date.now() + 30 * 60_000);
         log.push("campaigns cached");
+        console.log(`[cron/daily] step 0: ${log.join(", ")}`);
         return next(url, 1, log);
       }
       // step 1.. = 광고주 순서
@@ -41,6 +42,7 @@ export async function GET(request: Request) {
         if (creativeKeys.length) await getCreativeReport(creativeKeys, since, today).catch(() => null);
         log.push(`warmed ${advertisers[i].name}`);
       }
+      console.log(`[cron/daily] step ${step}: ${log.join(", ")}`);
       if (i < advertisers.length) return next(url, i + 1, log);
       return Response.json({ done: true, log });
     } catch (error) {
