@@ -4,9 +4,9 @@ import { assistantTools } from "@/lib/assistant-tools";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// TEMP diagnostic: checks the API key, model, and tool schemas with a tiny request.
+// 진단용: API 키·모델·도구 스키마를 아주 작은 요청으로 확인한다. (/api/assistant/health)
 export async function GET(request: Request) {
-  const model = new URL(request.url).searchParams.get("model") || "claude-opus-5";
+  const model = new URL(request.url).searchParams.get("model") || "claude-opus-5-5";
   const withTools = new URL(request.url).searchParams.get("tools") !== "0";
   const started = Date.now();
   try {

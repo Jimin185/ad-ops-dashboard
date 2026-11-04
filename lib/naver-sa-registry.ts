@@ -47,9 +47,19 @@ function parseHeader(request: Request): NaverSaCredential[] {
   }
 }
 
-/** 요청 헤더에 담긴 등록 계정을 이 요청 처리 동안 어댑터가 쓸 수 있게 한다. */
-export function withNaverSaAccounts<T>(request: Request, run: () => Promise<T>): Promise<T> {
-  return storage.run(parseHeader(request), run);
+/** 요청 헤더(브라우저 저장)와 Supabase에 저장된 등록 계정을 이 요청 처리 동안 어댑터가 쓸 수 있게 한다. */
+export async function withNaverSaAccounts<T>(request: Request, run: () => Promise<T>): Promise<T> {
+  const list = parseHeader(request);
+  try {
+    const { storageAvailable, listNaverSaSealed } = await import("@/lib/db");
+    if (storageAvailable()) {
+      for (const row of await listNaverSaSealed()) {
+        const credential = openCredential(row.sealed);
+        if (credential && !list.some((item) => item.customerId === credential.customerId)) list.push(credential);
+      }
+    }
+  } catch { /* 저장소 오류여도 헤더 계정으로 계속 */ }
+  return storage.run(list, run);
 }
 
 export function registeredNaverSa(): NaverSaCredential[] {
