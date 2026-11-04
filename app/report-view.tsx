@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Campaign, Channel, DailyRow, ReportResult } from "@/lib/types";
 import type { MediaMix } from "@/lib/mix";
 
@@ -53,7 +53,7 @@ function useWidth<T extends HTMLElement>() {
   return { ref, width };
 }
 
-function Gauge({ label, value, target, format, caption, toneRatio }: { label: string; value: number; target?: number; format: (v: number) => string; caption: string; toneRatio?: number }) {
+function Gauge({ label, value, target, format, caption, toneRatio, action }: { label: string; value: number; target?: number; format: (v: number) => string; caption: string; toneRatio?: number; action?: ReactNode }) {
   const ratio = target ? value / target : 0;
   const judged = toneRatio ?? ratio;
   const r = 52, c = 2 * Math.PI * r;
@@ -71,6 +71,7 @@ function Gauge({ label, value, target, format, caption, toneRatio }: { label: st
       </div>
       <p className="gauge-caption"><b>{format(value)}</b>{target ? <> / 목표 {format(target)}</> : null}</p>
       <small className="viz-sub">{caption}</small>
+      {action}
     </article>
   );
 }
@@ -167,7 +168,8 @@ function niceTicks(max: number) {
   return Array.from({ length: 5 }, (_, i) => Math.round(i * step));
 }
 
-export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch }: {
+export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch, onOpenCampaign }: {
+  onOpenCampaign?: (campaignId: string) => void;
   accountKeys: string[];
   campaigns: Campaign[];
   mixes: MediaMix[];
@@ -246,15 +248,14 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch 
       </div>
 
       <div className="report-grid-top">
-        <Gauge label="ROAS 목표 달성" value={roasOf(totals.spend, totals.revenue)} target={targetRoas || undefined} format={pct} caption={mixForPeriod ? `${range.month} 믹스 기준` : "이 기간의 믹스가 없습니다"} />
-        <Gauge label="예산 소진" value={totals.spend} target={targetBudget || undefined} toneRatio={targetBudget && period === "this_month" ? projected / targetBudget : undefined} format={compactWon} caption={targetBudget ? (period === "this_month" ? `월말 예상 ${Math.round(projected / targetBudget * 100)}%` : `${range.month} 믹스 예산`) : "이 기간의 믹스가 없습니다"} />
+        <Gauge action={<button className="link-button" onClick={onOpenMix}>믹스 보러 가기 →</button>} label="ROAS 목표 달성" value={roasOf(totals.spend, totals.revenue)} target={targetRoas || undefined} format={pct} caption={mixForPeriod ? `${range.month} 믹스 기준` : "이 기간의 믹스가 없습니다"} />
+        <Gauge action={<button className="link-button" onClick={onOpenMix}>{mixForPeriod ? "믹스 보러 가기 →" : "믹스 만들기 →"}</button>} label="예산 소진" value={totals.spend} target={targetBudget || undefined} toneRatio={targetBudget && period === "this_month" ? projected / targetBudget : undefined} format={compactWon} caption={targetBudget ? (period === "this_month" ? `월말 예상 ${Math.round(projected / targetBudget * 100)}%` : `${range.month} 믹스 예산`) : "이 기간의 믹스가 없습니다"} />
         <article className="viz-card wide">
           <div className="viz-head"><span className="viz-title">일자별 광고비 (채널별)</span>
             <div className="legend">{channels.map((c) => <span key={c}><i style={{ background: SERIES_VAR[c] }} />{CHANNEL_LABEL[c]}</span>)}</div></div>
           <SpendBars days={days} channels={channels} />
         </article>
       </div>
-      {!mixForPeriod && (period === "this_month" || period === "last_month") && <button className="mix-cta" onClick={onOpenMix}>{range.month} 미디어 믹스를 만들면 목표 대비 달성률이 표시됩니다 →</button>}
 
       <div className="report-grid-bottom">
         <article className="viz-card">
@@ -281,7 +282,7 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch 
         {showTable ? <div className="table-wrap"><table className="campaign-table"><thead><tr><th>날짜</th>{channels.map((c) => <th key={c}>{CHANNEL_LABEL[c]}</th>)}<th>합계</th><th>매출</th><th>ROAS</th></tr></thead>
           <tbody>{days.map((d) => <tr key={d.date}><td>{d.date}</td>{channels.map((c) => <td key={c}>{won.format(d.byChannel[c] || 0)}</td>)}<td>{won.format(d.total)}</td><td>{won.format(d.revenue)}</td><td>{pct(roasOf(d.total, d.revenue))}</td></tr>)}</tbody></table></div>
           : <div className="table-wrap"><table className="campaign-table"><thead><tr><th>채널</th><th>캠페인</th><th>광고비</th><th>전환</th><th>ROAS</th></tr></thead>
-            <tbody>{topCampaigns.length ? topCampaigns.map((c) => <tr key={c.id}><td><span className={`channel ${c.channel}`}>{CHANNEL_LABEL[c.channel]}</span></td><td><b>{c.name}</b><small className="id">{c.accountName}</small></td><td>{won.format(c.spend)}</td><td>{c.conversions.toLocaleString()}</td><td>{pct(c.roas)}</td></tr>) : <tr><td colSpan={5}>이번 달 광고비가 있는 캠페인이 없습니다.</td></tr>}</tbody></table></div>}
+            <tbody>{topCampaigns.length ? topCampaigns.map((c) => <tr key={c.id} className="link-cell" title="매체별 데이터에서 보기" onClick={() => onOpenCampaign?.(c.id)}><td><span className={`channel ${c.channel}`}>{CHANNEL_LABEL[c.channel]}</span></td><td><b>{c.name}</b><small className="id">{c.accountName}</small></td><td>{won.format(c.spend)}</td><td>{c.conversions.toLocaleString()}</td><td>{pct(c.roas)}</td></tr>) : <tr><td colSpan={5}>이번 달 광고비가 있는 캠페인이 없습니다.</td></tr>}</tbody></table></div>}
       </article>
     </section>
   );

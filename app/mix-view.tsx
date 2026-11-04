@@ -19,7 +19,8 @@ function monthRange(month: string) {
   return { since: `${month}-01`, until: new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) };
 }
 
-export function MixView({ advertiserId, advertiserName, accountKeys, mixes, campaigns, onSave, onDelete, onAskAi, apiFetch }: {
+export function MixView({ advertiserId, advertiserName, accountKeys, mixes, campaigns, onSave, onDelete, onAskAi, apiFetch, onOpenCampaign }: {
+  onOpenCampaign?: (campaignId: string) => void;
   advertiserId: string;
   campaigns: Campaign[];
   advertiserName: string;
@@ -142,7 +143,7 @@ export function MixView({ advertiserId, advertiserName, accountKeys, mixes, camp
         </article>
       </div>
 
-      <MixLines lines={draft.lines || []} onChange={setLines} campaigns={isCurrentMonth ? campaigns : []} monthProgress={monthProgress} isCurrentMonth={isCurrentMonth}
+      <MixLines onOpenCampaign={onOpenCampaign} lines={draft.lines || []} onChange={setLines} campaigns={isCurrentMonth ? campaigns : []} monthProgress={monthProgress} isCurrentMonth={isCurrentMonth}
         previousLines={prevMix?.lines} />
       {!isCurrentMonth && draft.lines?.length ? <small className="viz-sub">라인별 집행 실적은 이번 달 믹스에서 보여요. 지난 달은 리포트 탭에서 확인하세요.</small> : null}
 
