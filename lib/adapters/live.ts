@@ -108,10 +108,12 @@ async function metaPost(path: string, fields: Record<string, string | number>) {
   });
 }
 async function metaAccounts(): Promise<AdAccount[]> {
-  const single = env("META_AD_ACCOUNT_ID");
   const business = env("META_BUSINESS_ID");
   if (!metaToken()) return [];
-  if (!business) return single ? [{ id: single.replace(/^act_/, ""), channel: "meta", name: `Meta ${single.replace(/^act_/, "")}` }] : [];
+  // META_AD_ACCOUNT_ID에 쉼표로 여러 계정을 지정하면 비즈니스 조회 없이 그 계정들만 사용한다.
+  const listed = (env("META_AD_ACCOUNT_ID") || "").split(",").map((v) => v.trim().replace(/^act_/, "")).filter(Boolean);
+  if (listed.length) return listed.map((id) => ({ id, channel: "meta" as const, name: `Meta ${id}` }));
+  if (!business) return [];
   const [owned, client] = await Promise.all([
     metaGet(`${business}/owned_ad_accounts`, { fields: "id,name", limit: "500" }),
     metaGet(`${business}/client_ad_accounts`, { fields: "id,name", limit: "500" }),
