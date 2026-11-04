@@ -25,6 +25,7 @@ export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines
   const [errors, setErrors] = useState<Array<{ channel: string; accountId: string; message: string }>>([]);
   const [loading, setLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [poll, setPoll] = useState(0);
   const [fetchedAt, setFetchedAt] = useState("");
   const range = useMemo(() => periodRange(period), [period]);
 
@@ -32,13 +33,13 @@ export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines
     if (!targets.length) return;
     let cancelled = false;
     setLoading(true);
-    apiFetch("/api/creatives", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts: targets, since: range.since, until: range.until, refresh: reloadKey > 0 }) })
-      .then((r) => r.json()).then((data) => { if (cancelled) return; setRows(data.rows || []); setFetchedAt(data.fetchedAt || ""); setErrors(data.errors || (data.error ? [{ channel: "", accountId: "", message: data.error }] : [])); })
+    apiFetch("/api/creatives", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts: targets, since: range.since, until: range.until, refresh: reloadKey > 0 && poll === 0 }) })
+      .then((r) => r.json()).then((data) => { if (cancelled) return; setRows(data.rows || []); if (data.pending?.length && poll < 6) setTimeout(() => !cancelled && setPoll((n) => n + 1), 500); setFetchedAt(data.fetchedAt || ""); setErrors(data.errors || (data.error ? [{ channel: "", accountId: "", message: data.error }] : [])); })
       .catch(() => !cancelled && setErrors([{ channel: "", accountId: "", message: "소재 성과를 불러오지 못했습니다." }]))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targets.join(","), range.since, range.until, reloadKey]);
+  }, [targets.join(","), range.since, range.until, reloadKey, poll]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
