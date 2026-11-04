@@ -27,7 +27,9 @@ async function jsonFetch(url: string, init?: RequestInit) {
   try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
   if (!response.ok) {
     const detail = body?.error?.details?.flatMap((item: any) => item?.errors || [])?.[0];
-    const message = detail?.message || detail?.errorCode && JSON.stringify(detail.errorCode) || body?.error?.message || body?.message || `${response.status} ${response.statusText}`;
+    const message = detail?.message || detail?.errorCode && JSON.stringify(detail.errorCode) || body?.error?.message || body?.message || body?.title || body?.detail || `${response.status} ${response.statusText}`;
+    const code = body?.code ?? body?.error?.code;
+    if (code !== undefined && !String(message).includes(String(code))) throw new Error(`${message} (code ${code}, HTTP ${response.status})`);
     throw new Error(message);
   }
   return body;
@@ -40,33 +42,56 @@ function naverCredentials() {
   return apiKey && secret && customerId ? { apiKey, secret, customerId: cleanId(customerId) } : null;
 }
 
-async function naverRequest(method: string, path: string, body?: unknown) {
+async function naverRequest(method: string, path: string, body?: unknown, customerId?: string) {
   const credentials = naverCredentials();
   if (!credentials) throw new Error("네이버 SA 인증정보가 없습니다.");
   const timestamp = Date.now().toString();
-  const signature = crypto.createHmac("sha256", credentials.secret).update(`${timestamp}.${method}.${path}`).digest("base64");
+  // 네이버 SA 서명은 쿼리스트링을 제외한 URI로 생성해야 한다.
+  const signature = crypto.createHmac("sha256", credentials.secret).update(`${timestamp}.${method}.${path.split("?")[0]}`).digest("base64");
   return jsonFetch(`https://api.searchad.naver.com${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",
       "X-Timestamp": timestamp,
       "X-API-KEY": credentials.apiKey,
-      "X-Customer": credentials.customerId,
+      "X-Customer": customerId ? cleanId(customerId) : credentials.customerId,
       "X-Signature": signature,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
 
-async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
+async function naverAccounts(): Promise<AdAccount[]> {
   const credentials = naverCredentials();
   if (!credentials) return [];
-  const rows = await naverRequest("GET", "/ncc/campaigns");
-  return (rows as any[]).filter((row) => includeOff || row.status === "ELIGIBLE").map((row) => ({
-    id: packed("naver_sa", credentials.customerId, row.nccCampaignId), channel: "naver_sa", name: row.name,
-    dailyBudget: num(row.dailyBudget), status: row.userLock ? "off" : "on", spend: 0, conversions: 0, roas: 0,
-    accountId: credentials.customerId, accountName: `네이버 SA ${credentials.customerId}`,
-  }));
+  // 대행사(MCC) 계정이면 연결된 광고주 목록을 조회하고, 아니면 자기 계정만 사용한다.
+  let clients: any[] = [];
+  try { clients = await naverRequest("GET", "/customer-links?type=MYCLIENTS"); } catch { clients = []; }
+  const linked = (Array.isArray(clients) ? clients : []).map((row: any) => ({ id: String(row.clientCustomerId || ""), channel: "naver_sa" as const, name: row.clientLoginId ? `네이버 SA ${row.clientLoginId}` : `네이버 SA ${row.clientCustomerId}` })).filter((row) => row.id);
+  return linked.length ? linked : [{ id: credentials.customerId, channel: "naver_sa", name: `네이버 SA ${credentials.customerId}` }];
+}
+
+async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
+  const accounts = await naverAccounts();
+  return settleAccounts(accounts, async (account) => {
+    const rows = await naverRequest("GET", "/ncc/campaigns", undefined, account.id);
+    return (rows as any[]).filter((row) => includeOff || row.status === "ELIGIBLE").map((row) => ({
+      id: packed("naver_sa", account.id, row.nccCampaignId), channel: "naver_sa" as const, name: row.name,
+      dailyBudget: num(row.dailyBudget), status: (row.userLock ? "off" : "on") as EntityStatus, spend: 0, conversions: 0, roas: 0,
+      accountId: account.id, accountName: account.name,
+    }));
+  });
+}
+
+// 계정 하나가 실패해도 나머지 계정 결과는 살린다. 전부 실패했을 때만 에러를 던진다.
+async function settleAccounts(accounts: AdAccount[], run: (account: AdAccount) => Promise<Campaign[]>): Promise<Campaign[]> {
+  const results = await Promise.allSettled(accounts.map(run));
+  const ok = results.filter((r): r is PromiseFulfilledResult<Campaign[]> => r.status === "fulfilled");
+  if (accounts.length && !ok.length) {
+    const first = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    throw first?.reason instanceof Error ? first.reason : new Error(String(first?.reason));
+  }
+  return ok.flatMap((r) => r.value);
 }
 
 function metaToken() { return env("META_SYSTEM_USER_ACCESS_TOKEN", "META_ACCESS_TOKEN"); }
@@ -85,10 +110,12 @@ async function metaPost(path: string, fields: Record<string, string | number>) {
   });
 }
 async function metaAccounts(): Promise<AdAccount[]> {
-  const single = env("META_AD_ACCOUNT_ID");
   const business = env("META_BUSINESS_ID");
   if (!metaToken()) return [];
-  if (!business) return single ? [{ id: single.replace(/^act_/, ""), channel: "meta", name: `Meta ${single.replace(/^act_/, "")}` }] : [];
+  // META_AD_ACCOUNT_ID에 쉼표로 여러 계정을 지정하면 비즈니스 조회 없이 그 계정들만 사용한다.
+  const listed = (env("META_AD_ACCOUNT_ID") || "").split(",").map((v) => v.trim().replace(/^act_/, "")).filter(Boolean);
+  if (listed.length) return listed.map((id) => ({ id, channel: "meta" as const, name: `Meta ${id}` }));
+  if (!business) return [];
   const [owned, client] = await Promise.all([
     metaGet(`${business}/owned_ad_accounts`, { fields: "id,name", limit: "500" }),
     metaGet(`${business}/client_ad_accounts`, { fields: "id,name", limit: "500" }),
@@ -99,7 +126,7 @@ async function metaAccounts(): Promise<AdAccount[]> {
 async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await metaAccounts();
   const { since, until } = monthRange();
-  const batches = await Promise.all(accounts.map(async (account) => {
+  return settleAccounts(accounts, async (account) => {
     const body = await metaGet(`act_${account.id}/campaigns`, {
       fields: `id,name,status,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values}`,
       limit: "500",
@@ -113,8 +140,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
         status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
         accountId: account.id, accountName: account.name };
     });
-  }));
-  return batches.flat();
+  });
 }
 
 let googleTokenCache: { token: string; expiresAt: number } | null = null;
@@ -143,12 +169,13 @@ async function googleSearch(customer: string, query: string) {
 async function googleAccounts(): Promise<AdAccount[]> {
   const manager = cleanId(env("GOOGLE_ADS_LOGIN_CUSTOMER_ID") || "");
   if (!manager || !env("GOOGLE_ADS_DEVELOPER_TOKEN")) return [];
-  const rows = await googleSearch(manager, "SELECT customer_client.id, customer_client.descriptive_name, customer_client.manager, customer_client.status FROM customer_client WHERE customer_client.status = 'ENABLED'");
-  return rows.map((row: any) => ({ id: String(row.customerClient?.id || ""), channel: "google_ads" as const, name: row.customerClient?.descriptiveName || `Google Ads ${row.customerClient?.id}` })).filter((row: AdAccount) => row.id && row.id !== manager);
+  const rows = await googleSearch(manager, "SELECT customer_client.id, customer_client.descriptive_name, customer_client.manager, customer_client.status FROM customer_client WHERE customer_client.status = 'ENABLED' AND customer_client.manager = FALSE");
+  // 관리자(MCC/하위 MCC) 계정은 측정항목 조회가 불가하므로 제외한다. 로그인 ID가 일반 광고계정이면 자기 자신이 포함된다.
+  return rows.map((row: any) => ({ id: String(row.customerClient?.id || ""), channel: "google_ads" as const, name: row.customerClient?.descriptiveName || `Google Ads ${row.customerClient?.id}` })).filter((row: AdAccount) => row.id);
 }
 async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await googleAccounts();
-  const batches = await Promise.all(accounts.map(async (account) => {
+  return settleAccounts(accounts, async (account) => {
     const status = includeOff ? "campaign.status != 'REMOVED'" : "campaign.status = 'ENABLED'";
     const rows = await googleSearch(account.id, `SELECT campaign.id, campaign.name, campaign.status, campaign_budget.amount_micros, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE ${status} AND segments.date DURING THIS_MONTH`);
     return rows.map((row: any) => {
@@ -158,8 +185,7 @@ async function googleCampaigns(includeOff: boolean): Promise<Campaign[]> {
         conversions: Math.round(num(row.metrics?.conversions)), roas: spend ? Math.round(num(row.metrics?.conversionsValue) / spend * 100) : 0,
         accountId: account.id, accountName: account.name };
     });
-  }));
-  return batches.flat();
+  });
 }
 
 const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads" };
@@ -167,8 +193,7 @@ const channelNames: Record<Channel, string> = { naver_sa: "네이버 SA", naver_
 export async function getLiveAccounts(): Promise<{ accounts: AdAccount[]; errors: Partial<Record<Channel, string>> }> {
   const accounts: AdAccount[] = [];
   const errors: Partial<Record<Channel, string>> = {};
-  const naver = naverCredentials();
-  if (naver) accounts.push({ id: naver.customerId, channel: "naver_sa", name: `네이버 SA ${naver.customerId}` });
+  accounts.push(...await naverAccounts().catch(() => []));
   const gfaId = env("NAVER_GFA_ACCOUNT_ID", "NAVER_GFA_MANAGER_ACCOUNT_ID");
   if (gfaId) accounts.push({ id: gfaId, channel: "naver_gfa", name: `네이버 GFA ${gfaId}` });
   const results = await Promise.allSettled([metaAccounts(), googleAccounts()]);
