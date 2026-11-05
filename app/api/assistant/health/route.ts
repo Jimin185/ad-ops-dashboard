@@ -19,9 +19,14 @@ export async function GET(request: Request) {
       const j = await r.json().catch(() => ({}));
       return Response.json({ status: r.status, models: (j.data || []).map((m: any) => m.id) });
     }
-    const res = await fetch(`${cfg.base}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: cfg.model, messages: [{ role: "user", content: "한 단어로 인사해" }] }) });
-    const text = await res.text();
-    return Response.json({ ok: res.ok, free: true, label: cfg.label, model: cfg.model, status: res.status, ms: Date.now() - started, body: text.slice(0, 400) });
+    const tries: any[] = [];
+    for (const model of [cfg.model, ...cfg.fallbacks]) {
+      const res = await fetch(`${cfg.base}/chat/completions`, { method: "POST", signal: AbortSignal.timeout(12_000), headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "한 단어로 인사해" }] }) }).catch((e) => null);
+      const text = res ? await res.text() : "timeout";
+      tries.push({ model, status: res?.status ?? 0, body: text.slice(0, 200) });
+      if (res?.ok) break;
+    }
+    return Response.json({ ok: tries.some((t) => t.status === 200), free: true, label: cfg.label, ms: Date.now() - started, tries });
   }
   try {
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });

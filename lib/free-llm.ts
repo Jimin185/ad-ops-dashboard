@@ -11,7 +11,7 @@ export function freeLlmConfig() {
   const base = (process.env.FREE_LLM_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/+$/, "");
   const model = process.env.FREE_LLM_MODEL || "gemini-3.8-flash";
   const label = process.env.FREE_LLM_LABEL || (base.includes("groq") ? "Groq" : base.includes("googleapis") ? "Gemini" : "무료 모델");
-  const fallbacks = (process.env.FREE_LLM_FALLBACK_MODELS || "").split(",").map((m) => m.trim()).filter((m) => m && m !== model);
+  const fallbacks = (process.env.FREE_LLM_FALLBACK_MODELS || (base.includes("googleapis") ? "gemini-3.7-flash,gemini-3.5-flash,gemini-flash-lite-latest" : "")).split(",").map((m) => m.trim()).filter((m) => m && m !== model);
   return { key, base, model, label, fallbacks };
 }
 
