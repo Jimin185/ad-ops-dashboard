@@ -160,6 +160,7 @@ export default function Dashboard() {
   const [chatOpen, setChatOpen] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [progress, setProgress] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([
     { role: "assistant", content: "안녕하세요. 성과 리포트, 월별 미디어 믹스 초안, 믹스에 맞춘 예산 조정, 소재 카피 시안까지 도와드릴게요. 예산·상태 변경은 확인 후에만 적용됩니다." },
   ]);
@@ -530,14 +531,28 @@ export default function Dashboard() {
     abortRef.current = controller;
     try {
       const history = next.map(({ role, content }) => ({ role, content }));
-      const response = await apiFetch("/api/assistant", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: history, attachments: files, context: { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes, mixLineSummary } }) });
-      const data = await response.json();
-      setMessages((current) => [...current, { role: "assistant", content: response.ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts, usage: data.usage }]);
+      const context = { advertiserId: selectedAdvertiser?.id, advertiserName: selectedAdvertiser?.name, accountKeys: selectedAdvertiser?.accountKeys || [], mixes, mixLineSummary };
+      // 긴 작업(세팅 등)은 서버가 60초 안에서 끊어 돌려주므로, 끝날 때까지 이어서 요청한다.
+      let continuation: unknown = undefined;
+      let data: any = null;
+      let ok = false;
+      for (let round = 0; round < 10; round += 1) {
+        if (round > 0) setProgress(`작업이 길어 이어서 진행 중… (${round + 1}단계)`);
+        const response = await apiFetch("/api/assistant", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(continuation ? { continuation, context } : { messages: history, attachments: files, context }) });
+        const raw = await response.text();
+        try { data = JSON.parse(raw); } catch { data = { error: response.status === 504 || /timeout/i.test(raw) ? "응답 시간이 초과됐어요. 요청을 조금 나눠서 다시 시도해 주세요." : `서버 오류(${response.status})가 발생했어요. 잠시 후 다시 시도해 주세요.` }; }
+        ok = response.ok && !data.error;
+        if (!ok || !data.continue) break;
+        continuation = data.continue;
+      }
+      if (ok && data?.continue) data = { message: "작업 단계가 너무 많아 중간에 멈췄어요. 이어서 하려면 \"계속해\"라고 보내 주세요.", pendingActions: data.continue.pendingActions, mixDrafts: data.continue.mixDrafts, usage: data.usage };
+      setMessages((current) => [...current, { role: "assistant", content: ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts, usage: data.usage }]);
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === "AbortError";
       setMessages((current) => [...current, { role: "assistant", content: aborted ? "응답을 중지했어요." : "서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요." }]);
     } finally {
       abortRef.current = null;
+      setProgress("");
       setSending(false);
     }
   }
@@ -554,7 +569,7 @@ export default function Dashboard() {
             {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
             {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(true); }} />)}
           </div>)}
-          {sending && <div className="message assistant"><span className="typing">● ● ●</span> <button className="link-button" onClick={stopMessage}>중지</button></div>}
+          {sending && <div className="message assistant"><span className="typing">● ● ●</span>{progress && <small> {progress}</small>} <button className="link-button" onClick={stopMessage}>중지</button></div>}
         </div>
         <div className="suggestions"><button onClick={() => setInput("이번 달 채널별 성과를 믹스 목표와 비교해줘")}>믹스 대비 성과</button><button onClick={() => setInput("다음 달 미디어 믹스 초안 만들어줘")}>다음 달 믹스</button><button onClick={() => setInput("이번 달 믹스대로 남은 기간 일예산 조정안 만들어줘")}>믹스대로 예산 조정</button><button onClick={() => setInput("성과 좋은 소재 기준으로 Meta 카피 시안 3개 써줘")}>카피 시안</button></div>
         {attachments.length > 0 && <div className="attach-chips">{attachments.map((a) => <span key={a.name}>📎 {a.name}<button aria-label={`${a.name} 빼기`} onClick={() => setAttachments((cur) => cur.filter((x) => x.name !== a.name))}>×</button></span>)}</div>}
