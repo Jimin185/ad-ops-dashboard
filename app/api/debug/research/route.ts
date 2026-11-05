@@ -1,3 +1,4 @@
+// preview env: META_SYSTEM_USER_ACCESS_TOKEN enabled for preview on 2026-11-05
 // 임시 조사용(research/desker-desk 브랜치 미리보기 전용, main에 합치지 않음).
 // 데스커 책상세트 A/B 표본 추정: Meta·GFA 소재 단위 월별 성과 조회만 한다. 광고 계정은 바꾸지 않는다.
 import { researchApi } from "@/lib/adapters/live";
