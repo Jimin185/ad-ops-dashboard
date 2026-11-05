@@ -766,24 +766,32 @@ export async function assertMediaScope(step: MediaStep, allowedKeys: string[]) {
 }
 
 const GFA_RESOURCE: Record<EntityType, "campaigns" | "adSets" | "creatives"> = { campaign: "campaigns", adgroup: "adSets", ad: "creatives" };
-// GFA 수정: 현재 객체를 받아 필드만 바꿔 다시 보낸다(PUT 우선, 안 되면 PATCH). 두 방식 모두 실패하면 매체 오류를 그대로 보여준다.
-async function gfaUpdate(account: string, resource: "campaigns" | "adSets" | "creatives", id: string, mutate: (row: any) => any) {
-  const path = `adAccounts/${account}/${resource}/${id}`;
-  const current = await gfaRequest("GET", path);
-  const row = current?.data && typeof current.data === "object" && !Array.isArray(current.data) ? current.data : current;
-  const next = mutate(JSON.parse(JSON.stringify(row)));
-  // 바뀐 최상위 필드만 모은 본문(부분 수정용)
-  const diff: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(next)) if (JSON.stringify(v) !== JSON.stringify(row[k])) diff[k] = v;
-  // 조회 전용 필드를 뺀 전체 본문(전체 수정용)
-  const READ_ONLY = /^(no|adAccountNo|campaignNo|adSetNo|createdAt|createdDate|regTm|editTm|updatedAt|modifiedAt|lastModified.*|deleted|status|reviewStatus|.*Status|stats?|statistics|performance|links?)$/;
-  const trimmed = Object.fromEntries(Object.entries(next).filter(([k]) => !READ_ONLY.test(k) || k in diff));
-  const attempts: Array<[MediaMethod, unknown]> = [["PATCH", diff], ["PUT", trimmed], ["PUT", next]];
+// GFA 오픈API는 항목 경로(/adSets/{no})에 PUT·PATCH가 없다. 실제 수정 경로(OPTIONS로 확인):
+//   광고세트 수정  POST /adAccounts/{계정}/adSets/edit  (조회한 광고세트 객체를 고쳐서 보냄, 예산 필드는 budgetAmount)
+//   ON/OFF         POST /adAccounts/{계정}/{campaigns|adSets|creatives}/activate
+// 본문 형식은 문서가 없어 후보를 차례로 시도하고, 모두 실패하면 GFA가 준 오류를 함께 보여준다.
+async function gfaTry(label: string, path: string, bodies: unknown[]) {
   const errors: string[] = [];
-  for (const [method, body] of attempts) {
-    try { return await gfaRequest(method, path, body); } catch (error) { errors.push(`${method}${body === diff ? "(변경분)" : body === trimmed ? "(정리본)" : "(전체)"}: ${error instanceof Error ? error.message : String(error)}`); }
+  for (const body of bodies) {
+    try { return await gfaRequest("POST", path, body); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
   }
-  throw new Error(`GFA 변경 실패 — ${errors.join(" / ")} · 보낸 변경분: ${JSON.stringify(diff).slice(0, 200)} · 현재 필드: ${Object.keys(row).join(",").slice(0, 300)}`);
+  throw new Error(`GFA ${label} 실패 — ${[...new Set(errors)].join(" / ").slice(0, 900)}`);
+}
+async function gfaSetBudget(account: string, entityType: EntityType, id: string, amount: number) {
+  if (entityType !== "adgroup") throw new Error("GFA는 광고세트(광고그룹) 단위로 예산을 바꿀 수 있어요. 캠페인 아래 광고세트의 예산을 바꿔 주세요.");
+  const current = await gfaRequest("GET", `adAccounts/${account}/adSets/${id}`);
+  const row = { ...(current?.data && !Array.isArray(current.data) ? current.data : current) };
+  row.budgetAmount = Math.round(amount);
+  const { status: _s, spentBudgetRatio: _r, ...clean } = row;
+  return gfaTry("예산 변경", `adAccounts/${account}/adSets/edit`, [clean, row, [clean]]);
+}
+async function gfaSetActive(account: string, entityType: EntityType, id: string, on: boolean) {
+  const resource = GFA_RESOURCE[entityType];
+  const no = Number(id);
+  const key = { campaigns: "campaignNos", adSets: "adSetNos", creatives: "creativeNos" }[resource];
+  return gfaTry("ON/OFF 변경", `adAccounts/${account}/${resource}/activate`, [
+    { nos: [no], activated: on }, { [key]: [no], activated: on }, [{ no, activated: on }], { no, activated: on }, { nos: [no], activate: on },
+  ]);
 }
 
 async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
@@ -1087,15 +1095,8 @@ export const liveAdapter = {
     if (operation.kind === "media_plan") return executeMediaPlan(operation.steps as MediaStep[], operation.accountKeys);
     if (operation.channel === "naver_gfa") {
       const key = unpack(operation.id);
-      if (operation.kind === "update_budget" && operation.entityType === "ad") throw new Error("GFA 소재에는 예산이 없습니다.");
-      await gfaUpdate(key.account, GFA_RESOURCE[operation.entityType], key.id, (row) => {
-        if (operation.kind === "set_status") { row.activated = operation.status === "on"; return row; }
-        const value = Math.round(operation.dailyBudget);
-        if (row.budget && typeof row.budget === "object") { row.budget.dailyBudget = value; if ("budgetAmount" in row.budget) row.budget.budgetAmount = value; }
-        else if ("budgetAmount" in row && !("dailyBudget" in row)) row.budgetAmount = value;
-        else row.dailyBudget = value;
-        return row;
-      });
+      if (operation.kind === "set_status") await gfaSetActive(key.account, operation.entityType, key.id, operation.status === "on");
+      else await gfaSetBudget(key.account, operation.entityType, key.id, operation.dailyBudget);
       return { success: true, changed: 1 };
     }
     if (operation.kind === "create_text_ad") throw new Error("네이버 SA 소재 생성은 트래킹 템플릿 검증 후 지원됩니다.");
@@ -1128,11 +1129,3 @@ export const liveAdapter = {
   },
 };
 
-// 임시 점검용: GFA 경로가 어떤 메서드를 받는지 읽기 전용(GET·OPTIONS)으로만 확인한다.
-export async function gfaProbe(method: "GET" | "OPTIONS", path: string) {
-  const config = gfaConfig();
-  if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
-  const response = await fetch(`${GFA_BASE}/${path.replace(/^\/+/, "")}`, { method, headers: { Authorization: `Bearer ${await gfaToken()}`, AccessManagerAccountNo: config.manager }, cache: "no-store" });
-  const text = await response.text();
-  return { method, path, status: response.status, allow: response.headers.get("allow") || "", body: text.slice(0, 60_000) };
-}
