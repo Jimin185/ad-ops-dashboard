@@ -312,6 +312,18 @@ export async function GET(request: Request) {
       if (name === "xlsx") {
         const wb = XLSX.utils.book_new();
         const add = (rows: any[], n: string) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ 없음: "" }]), n);
+        // 요약: 2025-12 / 2026-11 환산 / 표본 계산 (책상세트 확실 기준, Meta 구매 = 공유항목 구매)
+        const pick = (m: string, ch: string) => b.byMonthMedia.find((x) => x.key === `${m}|${ch}`) || { 비용: 0, 구매_기본: 0, 구매_클릭: 0, 공유구매_기본: 0, 공유구매_클릭: 0 } as any;
+        const conv = (x: any, ch: string, basis: "기본" | "클릭") => ch === "meta" ? (basis === "기본" ? x.공유구매_기본 + x.구매_기본 : x.공유구매_클릭 + x.구매_클릭) : x.구매_기본;
+        const summary: any[] = [];
+        for (const [label, m, scale] of [["2025-12 (실적)", "2025-12", 1], ["2026-11 1~4일 (실적)", "2026-11", 1], ["2026-11 30일 환산", "2026-11", 7.5], ["2026-01", "2026-01", 1], ["2026-02", "2026-02", 1], ["2026-03", "2026-03", 1], ["2026-10", "2026-10", 1]] as Array<[string, string, number]>) {
+          let tc = 0, tb = 0, tk = 0;
+          for (const ch of ["meta", "gfa"]) { const x = pick(m, ch); const c = x.비용 * scale, b1 = conv(x, ch, "기본") * scale, k1 = conv(x, ch, "클릭") * scale; tc += c; tb += b1; tk += k1;
+            summary.push({ 기간: label, 매체: ch, 비용: Math.round(c), 구매_기본: Math.round(b1), 구매_클릭기준: Math.round(k1), CPA_기본: b1 ? Math.round(c / b1) : null, CPA_클릭: k1 ? Math.round(c / k1) : null }); }
+          summary.push({ 기간: label, 매체: "합계", 비용: Math.round(tc), 구매_기본: Math.round(tb), 구매_클릭기준: Math.round(tk), CPA_기본: tb ? Math.round(tc / tb) : null, CPA_클릭: tk ? Math.round(tc / tk) : null,
+            묶음당구매_기본: Math.round(tb / 2), 묶음당구매_클릭: Math.round(tk / 2), 묶음당100건_필요예산_기본: tb ? Math.round(tc / tb * 200) : null, 묶음당100건_필요예산_클릭: tk ? Math.round(tc / tk * 200) : null });
+        }
+        add(summary, "요약");
         add(b.byMonthMedia.map((x) => { const [월, 매체] = x.key.split("|"); return { 월, 매체, ...x, key: undefined }; }), "월별");
         add(b.byMonthMediaGroup.map((x) => { const [월, 매체, 그룹] = x.key.split("|"); return { 월, 매체, 그룹, ...x, key: undefined }; }), "소재그룹별");
         add(b.vague.map((a) => ({ 키: a.key, 그룹: a.group, 캠페인: a.cn, 광고그룹: a.sn, 광고: a.name, 문구: a.text, 링크: a.link, 이미지: a.urls[0] || "" })), "분류 애매 목록");
