@@ -8,8 +8,10 @@ export async function GET(request: Request) {
   const acct = q.get("acct") || "44324";
   const sets = (q.get("sets") || "").split(",").filter(Boolean);
   const sharp = (await import("sharp")).default;
+  const want = new Set((q.get("nos") || "").split(",").filter(Boolean));
   const out: any[] = [];
-  for (const s of sets) {
+  const started = Date.now();
+  await Promise.all(sets.map(async (s) => {
     try {
       for (let page = 0; page < 10; page++) {
         const b = await researchApi.gfaGet(`/adAccounts/${acct}/creatives`, { adSetNo: s, page: String(page), size: "100" });
@@ -17,13 +19,15 @@ export async function GET(request: Request) {
         for (const c of items) {
           const media = c.medias?.[0] || c.media || c.images?.[0] || c.image || {};
           const url = media.url || media.imageUrl || c.imageUrl || c.thumbnailUrl || c.previewUrl;
+          const no = String(c.no ?? c.creativeNo ?? "");
+          if (want.size && !want.has(no)) continue;
           let b64 = "";
-          if (url) { try { const r = await fetch(url, { signal: AbortSignal.timeout(8000) }); b64 = (await sharp(Buffer.from(await r.arrayBuffer())).resize({ width: 300, withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer()).toString("base64"); } catch {} }
+          if (url && Date.now() - started < 45_000) { try { const r = await fetch(url, { signal: AbortSignal.timeout(8000) }); b64 = (await sharp(Buffer.from(await r.arrayBuffer())).resize({ width: 300, withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer()).toString("base64"); } catch {} }
           out.push({ set: s, no: String(c.no ?? c.creativeNo ?? ""), name: c.name, url: url || "", b64 });
         }
         if (items.length < 100) break;
       }
     } catch (e) { out.push({ set: s, error: String(e).slice(0, 200) }); }
-  }
+  }));
   return Response.json(out);
 }
