@@ -11,7 +11,8 @@ export function freeLlmConfig() {
   const base = (process.env.FREE_LLM_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/+$/, "");
   const model = process.env.FREE_LLM_MODEL || "gemini-3.8-flash";
   const label = process.env.FREE_LLM_LABEL || (base.includes("groq") ? "Groq" : base.includes("googleapis") ? "Gemini" : "무료 모델");
-  return { key, base, model, label };
+  const fallbacks = (process.env.FREE_LLM_FALLBACK_MODELS || "").split(",").map((m) => m.trim()).filter((m) => m && m !== model);
+  return { key, base, model, label, fallbacks };
 }
 
 // Gemini 의 OpenAI 호환 스키마는 일부 키워드를 받지 않는다 → 단순화
@@ -47,12 +48,19 @@ export async function runFreeAssistant(history: Array<{ role: "user" | "assistan
   const usage = { input: 0, output: 0, cached: 0 };
   for (let step = 0; step < 8; step++) {
     if (Date.now() > deadlineMs) return { kind: "escalate", reason: "무료 모델 시간 초과" };
-    const res = await fetch(`${cfg.base}/chat/completions`, {
-      method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(5_000, deadlineMs - Date.now()))]),
-      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: cfg.model, messages, tools: TOOLS, tool_choice: "auto", temperature: 0.2 }),
-    });
-    const text = await res.text();
+    // 무료 등급은 혼잡(503)·한도(429)가 잦다 → 예비 모델로 한 번씩 더 시도
+    let res: Response | null = null, text = "";
+    for (const model of [cfg.model, ...cfg.fallbacks]) {
+      res = await fetch(`${cfg.base}/chat/completions`, {
+        method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(5_000, Math.min(20_000, deadlineMs - Date.now())))]),
+        headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, tools: TOOLS, tool_choice: "auto", temperature: 0.2 }),
+      }).catch(() => null);
+      text = res ? await res.text() : "";
+      if (res && ![429, 500, 503].includes(res.status)) break;
+      if (Date.now() > deadlineMs) break;
+    }
+    if (!res) return { kind: "escalate", reason: "무료 모델 응답 없음" };
     let body: any; try { body = JSON.parse(text); } catch { body = {}; }
     if (!res.ok) return { kind: "escalate", reason: `무료 모델 오류(${res.status}): ${String(body?.error?.message || body?.[0]?.error?.message || text).slice(0, 160)}` };
     usage.input += Number(body.usage?.prompt_tokens) || 0; usage.output += Number(body.usage?.completion_tokens) || 0;
