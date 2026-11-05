@@ -303,6 +303,22 @@ export async function GET(request: Request) {
       const list = [...b.ads.values()].filter((a) => !cls || a.cls === cls).map((a) => ({ k: a.key, s: Math.round(spend.get(a.key) || 0), c: a.cls, g: a.group, n: `${a.cn} › ${a.sn} › ${a.name}`.slice(0, 160), t: a.text.slice(0, 120), l: a.link.slice(0, 80) })).filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
       const off = Number(q.get("offset") || 0); return Response.json({ total: list.length, items: list.slice(off, off + Number(q.get("limit") || 150)) });
     }
+    if (op === "imgpack") {
+      // 소재 이미지 묶음(확인·보관용): 분류별, 비용순, 광고당 최대 3장, 가로 480px JPEG base64
+      const sharp = (await import("sharp")).default;
+      const classes = (q.get("cls") || "책상세트 확실,애매").split(",");
+      const spend = new Map<string, number>(); for (const r of [...b.metaRows, ...b.gfaRows]) { const k = r.매체 === "meta" ? `meta_${r.광고ID}` : `gfa_${r.소재ID}`; spend.set(k, (spend.get(k) || 0) + r.비용); }
+      const list = [...b.ads.values()].filter((a) => classes.includes(a.cls) && (spend.get(a.key) || 0) > 0).sort((x, y) => (spend.get(y.key) || 0) - (spend.get(x.key) || 0));
+      const off = Number(q.get("offset") || 0), lim = Number(q.get("limit") || 30);
+      const slice = list.slice(off, off + lim);
+      const items: any[] = [];
+      await pool(slice.flatMap((a) => (a.urls.length ? a.urls.slice(0, 3) : [""]).map((u, i) => ({ a, u, i }))), 10, async ({ a, u, i }) => {
+        if (!u) { items.push({ key: a.key, i, error: "no image url" }); return; }
+        try { const r = await fetch(u, { signal: AbortSignal.timeout(10_000) }); const buf = Buffer.from(await r.arrayBuffer()); const out = await sharp(buf).resize({ width: 480, withoutEnlargement: true }).jpeg({ quality: 70 }).toBuffer(); items.push({ key: a.key, i, b64: out.toString("base64") }); }
+        catch (e) { items.push({ key: a.key, i, error: String(e).slice(0, 100) }); }
+      });
+      return Response.json({ total: list.length, offset: off, items });
+    }
     if (op === "file") {
       const name = q.get("name");
       const headers = (type: string, file: string) => ({ "Content-Type": type, "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file)}` });
