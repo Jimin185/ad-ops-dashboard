@@ -722,9 +722,9 @@ export default function Dashboard() {
                     <td className="check-col" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selection.has(campaign.id)} onChange={(e) => toggleMany([{ id: campaign.id, channel: campaign.channel, entityType: "campaign", name: campaign.name }], e.target.checked)} /></td>
                     <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
                     <td><b>{selectedCampaign?.id === campaign.id ? "▾ " : "▸ "}{campaign.name}</b><small className="id">{campaign.accountName}{campaign.product ? ` · ${campaign.product}` : ""}</small></td>
-                    <td onClick={(e) => e.stopPropagation()}><BudgetButton value={campaign.dailyBudget} disabled={campaign.channel === "naver_gfa"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} /></td>
+                    <td onClick={(e) => e.stopPropagation()}><BudgetButton value={campaign.dailyBudget} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} /></td>
                     <td>{won.format(campaign.spend)}</td><td>{campaign.roas}%</td>
-                    <td onClick={(e) => e.stopPropagation()}><StatusButton status={campaign.status} label={campaign.name} disabled={campaign.channel === "naver_gfa"} onToggle={(next) => void applyOps([{ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: next }])} /></td>
+                    <td onClick={(e) => e.stopPropagation()}><StatusButton status={campaign.status} label={campaign.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: next }])} /></td>
                   </tr>,
                   selectedCampaign?.id === campaign.id && <tr key={`${campaign.id}-detail`} className="detail-row"><td colSpan={7}>
                     {detailError && <div className="connection-error">{detailError}</div>}
@@ -734,14 +734,14 @@ export default function Dashboard() {
                       <div className="entity-head">
                         <input type="checkbox" checked={selection.has(group.id)} onChange={(e) => toggleMany([{ id: group.id, channel: group.channel, entityType: "adgroup", name: group.name }], e.target.checked)} />
                         <button className="entity-name" onClick={() => adsByGroup[group.id] ? setAdsByGroup((cur) => { const next = { ...cur }; delete next[group.id]; return next; }) : void loadAds(group)}><b>{adsByGroup[group.id] ? "▾ " : "▸ "}{group.name}</b></button>
-                        <BudgetButton value={group.dailyBudget} disabled={group.channel === "naver_gfa" || group.channel === "google_ads"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: group.channel, entityType: "adgroup", id: group.id, dailyBudget: v }])} />
-                        <StatusButton status={group.status} label={group.name} disabled={group.channel === "naver_gfa"} onToggle={(next) => void applyOps([{ kind: "set_status", channel: group.channel, entityType: "adgroup", id: group.id, status: next }])} />
+                        <BudgetButton value={group.dailyBudget} disabled={group.channel === "google_ads"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: group.channel, entityType: "adgroup", id: group.id, dailyBudget: v }])} />
+                        <StatusButton status={group.status} label={group.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: group.channel, entityType: "adgroup", id: group.id, status: next }])} />
                       </div>
                       {adsByGroup[group.id]?.map((ad) => <div className={`ad-row ${ad.active === false ? "inactive-row" : ""}`} key={ad.id}>
                         <input type="checkbox" checked={selection.has(ad.id)} onChange={(e) => toggleMany([{ id: ad.id, channel: ad.channel, entityType: "ad", name: ad.name }], e.target.checked)} />
                         {ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span className="ad-thumb empty" />}
                         <b>{ad.name}</b>
-                        <StatusButton status={ad.status} label={ad.name} disabled={ad.channel === "naver_gfa"} onToggle={(next) => void applyOps([{ kind: "set_status", channel: ad.channel, entityType: "ad", id: ad.id, status: next }])} />
+                        <StatusButton status={ad.status} label={ad.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: ad.channel, entityType: "ad", id: ad.id, status: next }])} />
                       </div>)}
                     </div>)}</div>
                   </td></tr>,

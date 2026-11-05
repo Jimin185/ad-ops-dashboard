@@ -765,6 +765,20 @@ export async function assertMediaScope(step: MediaStep, allowedKeys: string[]) {
   }
 }
 
+const GFA_RESOURCE: Record<EntityType, "campaigns" | "adSets" | "creatives"> = { campaign: "campaigns", adgroup: "adSets", ad: "creatives" };
+// GFA 수정: 현재 객체를 받아 필드만 바꿔 다시 보낸다(PUT 우선, 안 되면 PATCH). 두 방식 모두 실패하면 매체 오류를 그대로 보여준다.
+async function gfaUpdate(account: string, resource: "campaigns" | "adSets" | "creatives", id: string, mutate: (row: any) => any) {
+  const path = `adAccounts/${account}/${resource}/${id}`;
+  const current = await gfaRequest("GET", path);
+  const row = current?.data && typeof current.data === "object" && !Array.isArray(current.data) ? current.data : current;
+  const next = mutate(JSON.parse(JSON.stringify(row)));
+  const errors: string[] = [];
+  for (const method of ["PUT", "PATCH"] as MediaMethod[]) {
+    try { return await gfaRequest(method, path, next); } catch (error) { errors.push(`${method}: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+  throw new Error(`GFA 변경 실패 — ${errors.join(" / ")}`);
+}
+
 async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
   const config = gfaConfig();
   if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
@@ -1042,6 +1056,12 @@ export const liveAdapter = {
   async resolveEntity(channel: Channel, entityType: EntityType, id: string) {
     if (entityType === "campaign") return entityFromCampaign(id);
     const key = unpack(id);
+    if (entityType === "adgroup" && channel === "naver_gfa") {
+      // GFA 광고세트는 ID로 바로 조회한다(캠페인 전체를 돌면 느리다)
+      const row = await gfaGet(`/adAccounts/${key.account}/adSets/${key.id}`).then((b) => b?.data && !Array.isArray(b.data) ? b.data : b).catch(() => null);
+      if (row && (row.no || row.name)) return { id, campaignId: packed(channel, key.account, String(row.campaignNo ?? row.campaign?.no ?? "")), channel, name: row.name || `광고세트 ${key.id}`,
+        dailyBudget: num(row.budget?.dailyBudget ?? row.dailyBudget ?? row.budgetAmount), status: (row.activated === false ? "off" : "on") as EntityStatus };
+    }
     if (entityType === "adgroup") {
       const campaigns = await allCampaigns(true);
       for (const campaign of campaigns.filter((row) => row.channel === channel && unpack(row.id).account === key.account)) {
@@ -1053,7 +1073,19 @@ export const liveAdapter = {
   },
   async apply(operation: ChangeOperation) {
     if (operation.kind === "media_plan") return executeMediaPlan(operation.steps as MediaStep[], operation.accountKeys);
-    if (operation.channel === "naver_gfa") throw new Error("GFA는 화면에서 바로 변경할 수 없어요. AI 어시스턴트에게 요청하면 GFA API로 변경안을 만들어 드려요.");
+    if (operation.channel === "naver_gfa") {
+      const key = unpack(operation.id);
+      if (operation.kind === "update_budget" && operation.entityType === "ad") throw new Error("GFA 소재에는 예산이 없습니다.");
+      await gfaUpdate(key.account, GFA_RESOURCE[operation.entityType], key.id, (row) => {
+        if (operation.kind === "set_status") { row.activated = operation.status === "on"; return row; }
+        const value = Math.round(operation.dailyBudget);
+        if (row.budget && typeof row.budget === "object") { row.budget.dailyBudget = value; if ("budgetAmount" in row.budget) row.budget.budgetAmount = value; }
+        else if ("budgetAmount" in row && !("dailyBudget" in row)) row.budgetAmount = value;
+        else row.dailyBudget = value;
+        return row;
+      });
+      return { success: true, changed: 1 };
+    }
     if (operation.kind === "create_text_ad") throw new Error("네이버 SA 소재 생성은 트래킹 템플릿 검증 후 지원됩니다.");
     const key = unpack(operation.id);
     if (operation.channel === "naver_sa") {
