@@ -772,11 +772,18 @@ async function gfaUpdate(account: string, resource: "campaigns" | "adSets" | "cr
   const current = await gfaRequest("GET", path);
   const row = current?.data && typeof current.data === "object" && !Array.isArray(current.data) ? current.data : current;
   const next = mutate(JSON.parse(JSON.stringify(row)));
+  // 바뀐 최상위 필드만 모은 본문(부분 수정용)
+  const diff: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(next)) if (JSON.stringify(v) !== JSON.stringify(row[k])) diff[k] = v;
+  // 조회 전용 필드를 뺀 전체 본문(전체 수정용)
+  const READ_ONLY = /^(no|adAccountNo|campaignNo|adSetNo|createdAt|createdDate|regTm|editTm|updatedAt|modifiedAt|lastModified.*|deleted|status|reviewStatus|.*Status|stats?|statistics|performance|links?)$/;
+  const trimmed = Object.fromEntries(Object.entries(next).filter(([k]) => !READ_ONLY.test(k) || k in diff));
+  const attempts: Array<[MediaMethod, unknown]> = [["PATCH", diff], ["PUT", trimmed], ["PUT", next]];
   const errors: string[] = [];
-  for (const method of ["PUT", "PATCH"] as MediaMethod[]) {
-    try { return await gfaRequest(method, path, next); } catch (error) { errors.push(`${method}: ${error instanceof Error ? error.message : String(error)}`); }
+  for (const [method, body] of attempts) {
+    try { return await gfaRequest(method, path, body); } catch (error) { errors.push(`${method}${body === diff ? "(변경분)" : body === trimmed ? "(정리본)" : "(전체)"}: ${error instanceof Error ? error.message : String(error)}`); }
   }
-  throw new Error(`GFA 변경 실패 — ${errors.join(" / ")}`);
+  throw new Error(`GFA 변경 실패 — ${errors.join(" / ")} · 보낸 변경분: ${JSON.stringify(diff).slice(0, 200)} · 현재 필드: ${Object.keys(row).join(",").slice(0, 300)}`);
 }
 
 async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
@@ -788,7 +795,12 @@ async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
   if (response.status === 401) response = await call(await gfaToken(true));
   const text = await response.text();
   let parsed: any; try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { message: text }; }
-  if (!response.ok) throw new Error(`${[parsed?.message, parsed?.error?.message, parsed?.title].find((v) => typeof v === "string") || JSON.stringify(parsed).slice(0, 400)} (HTTP ${response.status})`);
+  if (!response.ok) {
+    // GFA는 400에 "Bad Request"만 주고 상세는 다른 필드(errors, fieldErrors 등)에 담는 경우가 있어 본문을 함께 보여준다.
+    const head = [parsed?.message, parsed?.error?.message, parsed?.title].find((v) => typeof v === "string") || "";
+    const raw = JSON.stringify(parsed);
+    throw new Error(`${head}${raw && raw !== "{}" && raw.length > head.length + 20 ? ` ${raw.slice(0, 500)}` : ""} (HTTP ${response.status})`);
+  }
   return parsed;
 }
 
