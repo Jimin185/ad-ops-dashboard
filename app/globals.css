@@ -321,3 +321,6 @@ body { background:#fff; color:#323232; }
 .attach-chips span { display:inline-flex; align-items:center; gap:4px; padding:4px 8px; border-radius:8px; background:#f1f1f1; font-size:11px; }
 .attach-chips button { border:0; background:none; cursor:pointer; font-size:13px; }
 .attach-note { display:block; margin-top:4px; font-size:11px; opacity:.8; }
+.chat-fab-dot { position:absolute; top:8px; right:8px; width:12px; height:12px; border-radius:50%; background:#e5484d; border:2px solid #fff; }
+.chat-fab-dot.busy { background:#f5a623; animation:fabPulse 1.2s ease-in-out infinite; }
+@keyframes fabPulse { 50% { opacity:.35; } }

@@ -18,6 +18,12 @@ function sql() {
 async function ready() {
   const db = sql();
   migrated ||= (async () => {
+    // 테이블이 모두 있고 RLS도 켜져 있으면 DDL을 건너뛴다. 매 콜드스타트마다 ALTER TABLE을 돌리면
+    // 다른 긴 쿼리(월별 적재·크론)와 잠금이 걸려 광고주 목록 조회까지 멈출 수 있다.
+    const TABLES = ["adops_advertisers", "adops_mixes", "adops_naver_sa", "adops_cache", "adops_monthly", "adops_monthly_done", "adops_board"];
+    const [{ ok }] = await db`select count(*) filter (where relrowsecurity) = ${TABLES.length} as ok from pg_class where relname in ${db(TABLES)} and relkind = 'r'`;
+    if (ok) return;
+    await db`set local lock_timeout = '3s'`.catch(() => {});
     await db`create table if not exists adops_advertisers (
       id text primary key, name text not null, account_keys jsonb not null default '[]'::jsonb,
       created_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
