@@ -249,8 +249,15 @@ function gfaConfig() {
   return clientId && refreshToken && manager ? { clientId, clientSecret, refreshToken, manager: cleanId(manager) } : null;
 }
 let gfaTokenCache: { token: string; expiresAt: number } | null = null;
-async function gfaToken(force = false) {
+// 동시에 여러 요청이 토큰을 갱신하면 네이버가 일부를 실패시킨다(internal server error) → 갱신은 한 번만 하고 나머지는 기다린다.
+let gfaTokenPending: Promise<string> | null = null;
+async function gfaToken(force = false): Promise<string> {
   if (!force && gfaTokenCache && gfaTokenCache.expiresAt > Date.now() + 60_000) return gfaTokenCache.token;
+  if (gfaTokenPending) return gfaTokenPending;
+  gfaTokenPending = gfaTokenRefresh().finally(() => { gfaTokenPending = null; });
+  return gfaTokenPending;
+}
+async function gfaTokenRefresh() {
   const config = gfaConfig();
   if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
   const params: Record<string, string> = { grant_type: "refresh_token", client_id: config.clientId, refresh_token: config.refreshToken };
@@ -550,19 +557,25 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
     gfaPaged(`${base}/performance/past/creatives`, range).catch(() => []),
     gfaPaged(`${base}/performance/conversion/past/creatives`, range).catch(() => []),
   ]);
-  const stats = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; revenue: number; campaignNo: string }>();
-  const stat = (row: any) => { const key = String(row.creativeNo ?? row.adNo ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, campaignNo: String(row.campaignNo ?? "") }); return stats.get(key)!; };
+  const stats = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; revenue: number; campaignNo: string; adSetNo: string }>();
+  const stat = (row: any) => { const key = String(row.creativeNo ?? row.adNo ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, campaignNo: String(row.campaignNo ?? ""), adSetNo: String(row.adSetNo ?? "") }); return stats.get(key)!; };
   for (const row of perf) { const st = stat(row); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
   for (const row of conv) if (row.convType === "PURCHASE") { const st = stat(row); st.conversions += num(row.convCount); st.revenue += num(row.convSales); }
   const top = [...stats.entries()].filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend).slice(0, 60);
-  // 소재 상세는 ID별로 오래 캐시 (이름·이미지는 거의 안 바뀜)
-  const detailKey = `gfa-creative-detail:${accountId}`;
+  // 이미지는 소재 상세 API에는 없고 소재 목록 API에만 있다. 전체 목록(수천 개)은 느리므로 상위 소재가 속한 광고세트별로만 목록을 받는다.
+  const detailKey = `gfa-creative-detail:v2:${accountId}`;
   const details = (await cacheGet<Record<string, any>>(detailKey))?.value || {};
-  const missing = top.map(([id]) => id).filter((id) => !(id in details));
-  for (let i = 0; i < missing.length; i += 10) {
-    await Promise.all(missing.slice(i, i + 10).map(async (id) => {
-      try { const c = await gfaGet(`${base}/creatives/${id}`); const media = c.image || c.medias?.[0] || c.media || {}; details[id] = { name: c.name, image: media.imageUrl || media.url || c.imageUrl, title: c.title || c.headline, body: c.description, activated: c.activated, status: c.status }; }
-      catch { details[id] = null; }
+  const missing = top.filter(([id]) => !details[id]?.image);
+  const sets = [...new Set(missing.map(([, v]) => v.adSetNo).filter(Boolean))];
+  const started = Date.now();
+  for (let i = 0; i < sets.length && Date.now() - started < 25_000; i += 5) {
+    await Promise.all(sets.slice(i, i + 5).map(async (adSetNo) => {
+      try {
+        for (const c of await gfaPagedList(accountId, "creatives", { adSetNo })) {
+          const media = c.medias?.[0] || c.media || c.images?.[0] || c.image || {};
+          details[String(c.no ?? c.creativeNo ?? c.id)] = { name: c.name, image: media.url || media.imageUrl || c.imageUrl || c.thumbnailUrl || c.previewUrl, title: c.title || c.headline, body: c.description || c.body, activated: c.activated, status: c.status };
+        }
+      } catch { /* 이 광고세트는 건너뜀 */ }
     }));
   }
   if (missing.length) await cacheSet(detailKey, details, Date.now() + 14 * 86400_000);
@@ -583,7 +596,7 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
   const timeLimit = <T,>(promise: Promise<T>, ms: number) => Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), ms))]);
   const rows = (await Promise.all(targets.map(async (t) => {
     // 지난 주 이전 기간은 영구 적재, 그 외는 하루 한 번 갱신
-    const key = `creative:v2:${t.channel}:${t.accountId}:${since}:${until}`;
+    const key = `creative:v3:${t.channel}:${t.accountId}:${since}:${until}`;
     const cached = force ? null : await cacheGet<CreativeRow[]>(key);
     if (cached) { oldest = Math.min(oldest, cached.updatedAt); return cached.value; }
     try {
