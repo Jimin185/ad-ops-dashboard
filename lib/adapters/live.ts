@@ -1143,5 +1143,3 @@ export const liveAdapter = {
 };
 
 
-// 임시(조사용 브랜치 전용, main에 합치지 않음)
-export const researchApi = { gfaGet };
