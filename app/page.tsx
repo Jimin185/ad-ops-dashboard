@@ -161,9 +161,23 @@ export default function Dashboard() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState("");
+  const [advertisersFailed, setAdvertisersFailed] = useState(false);
+  const [unread, setUnread] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     { role: "assistant", content: "안녕하세요. 성과 리포트, 월별 미디어 믹스 초안, 믹스에 맞춘 예산 조정, 소재 카피 시안까지 도와드릴게요. 예산·상태 변경은 확인 후에만 적용됩니다." },
   ]);
+  // 대화는 이 브라우저에 저장해 화면을 옮기거나 새로고침해도 남는다(최근 40개).
+  const chatRestored = useRef(false);
+  useEffect(() => {
+    try { const saved = JSON.parse(localStorage.getItem("adops-chat") || "[]"); if (Array.isArray(saved) && saved.length) setMessages(saved); } catch { /* 무시 */ }
+    chatRestored.current = true;
+  }, []);
+  useEffect(() => {
+    if (!chatRestored.current) return;
+    try { localStorage.setItem("adops-chat", JSON.stringify(messages.slice(-40))); } catch { /* 용량 초과 등 */ }
+  }, [messages]);
+  const chatOpenRef = useRef(false);
+  useEffect(() => { chatOpenRef.current = chatOpen; if (chatOpen) setUnread(false); }, [chatOpen]);
 
   const [campaignsFetchedAt, setCampaignsFetchedAt] = useState("");
   const refresh = useCallback(async (force = false) => {
@@ -197,12 +211,21 @@ export default function Dashboard() {
     void (async () => {
       let local: Advertiser[] = [];
       try { local = JSON.parse(localStorage.getItem("adops-advertisers") || "[]"); } catch { local = []; }
+      // 지난번 목록을 먼저 보여주고, 서버 목록이 오면 바꾼다(첫 화면이 빨리 뜨도록).
+      if (local.length) setAdvertisers(local);
       try {
-        const status = await (await fetch("/api/storage", { cache: "no-store" })).json();
-        if (!status.available) throw new Error("unavailable");
-        const response = await fetch("/api/advertisers", { cache: "no-store" });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "광고주를 불러오지 못했습니다.");
+        let data: any = null;
+        let response: Response | null = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            response = await fetch("/api/advertisers", { cache: "no-store", signal: AbortSignal.timeout(15_000) });
+            data = await response.json().catch(() => ({ error: `서버 응답 오류(${response!.status})` }));
+            if (response.ok || response.status === 503) break;
+          } catch { data = { error: "광고주 목록 요청 시간이 초과됐어요." }; }
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        }
+        if (response?.status === 503 && data?.storage === "unavailable") throw new Error("unavailable");
+        if (!response?.ok) throw new Error(data?.error || "광고주를 불러오지 못했습니다.");
         // Supabase가 비어 있고 이 브라우저에 기존 데이터가 있으면 한 번 옮긴다.
         if (!data.advertisers.length && local.length) {
           await fetch("/api/advertisers", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advertisers: local }) });
@@ -213,7 +236,14 @@ export default function Dashboard() {
         } else setAdvertisers(data.advertisers);
         setStorageMode("supabase");
       } catch (error) {
-        if (error instanceof Error && error.message !== "unavailable") setStorageError(error.message);
+        if (error instanceof Error && error.message !== "unavailable") {
+          // 서버에서 못 받은 것: 브라우저 저장 모드로 바꾸지 않는다(빈 목록이 서버에 덮어써지는 걸 막음).
+          setStorageError(error.message);
+          setAdvertisersFailed(true);
+          if (!local.length) return;
+          setAdvertisers(local);
+          return;
+        }
         setAdvertisers(local);
         setStorageMode("local");
       }
@@ -546,6 +576,7 @@ export default function Dashboard() {
         continuation = data.continue;
       }
       if (ok && data?.continue) data = { message: "작업 단계가 너무 많아 중간에 멈췄어요. 이어서 하려면 \"계속해\"라고 보내 주세요.", pendingActions: data.continue.pendingActions, mixDrafts: data.continue.mixDrafts, usage: data.usage };
+      if (!chatOpenRef.current) setUnread(true);
       setMessages((current) => [...current, { role: "assistant", content: ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts, usage: data.usage }]);
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === "AbortError";
@@ -558,7 +589,7 @@ export default function Dashboard() {
   }
 
   const chatUi = (<>
-      <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="AI 어시스턴트 열기">✦</button>
+      <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="AI 어시스턴트 열기">✦{(unread || sending) && <span className={`chat-fab-dot${sending ? " busy" : ""}`} title={sending ? "AI가 작업 중이에요" : "새 답변이 있어요"} />}</button>
       {chatOpen && <aside className="chat-panel">
         <div className="chat-head"><div><b>AI 광고 운영 어시스턴트</b><small>변경은 승인 후 적용됩니다</small></div><button onClick={() => setChatOpen(false)}>×</button></div>
         <div className="messages">
@@ -599,7 +630,10 @@ export default function Dashboard() {
       <header><div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>광고주 선택</h1><p>운영할 광고주를 선택하면 연결된 매체 계정을 한 번에 불러옵니다.</p></div><div className="header-actions"><button className="secondary" onClick={() => setView("market")}>🔎 시장 인사이트</button><button className="secondary" onClick={() => setView("insights")}>📊 광고인사이트</button><button className="secondary" onClick={() => setView("mapping")}>광고계정 매핑</button></div></header>
       <section className="advertiser-picker">
         <div className="advertiser-grid">{advertisers.map((advertiser) => <button key={advertiser.id} onClick={() => { setSelectedAdvertiserId(advertiser.id); setView("dashboard"); }}><b>{advertiser.name}</b><span>{advertiser.accountKeys.length}개 광고계정</span></button>)}</div>
-        {!advertisers.length && <div className="empty-state"><b>등록된 광고주가 없습니다.</b><span>먼저 광고주를 만들고 광고계정을 매핑해 주세요.</span></div>}
+        {!advertisers.length && (advertisersFailed
+          ? <div className="empty-state"><b>광고주 목록을 불러오지 못했어요.</b><span>{storageError || "서버가 잠시 응답하지 않았어요."} <button className="link-button" onClick={() => window.location.reload()}>다시 불러오기</button></span></div>
+          : storageMode === "loading" ? <div className="empty-state"><b>광고주 목록을 불러오는 중…</b></div>
+          : <div className="empty-state"><b>등록된 광고주가 없습니다.</b><span>먼저 광고주를 만들고 광고계정을 매핑해 주세요.</span></div>)}
         <button className="primary" onClick={createAdvertiser}>+ 광고주 만들기</button>
       </section>
       {chatUi}

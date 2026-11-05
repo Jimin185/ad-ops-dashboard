@@ -24,6 +24,8 @@ export async function PUT(request: Request) {
       if (seen.has(key) && seen.get(key) !== a.id) return Response.json({ error: `${key} 계정이 여러 광고주에 매핑되어 있습니다.` }, { status: 409 });
       seen.set(key, a.id);
     }
+    // 화면이 목록을 못 불러온 상태에서 빈 목록으로 덮어쓰는 사고를 막는다.
+    if (!list.length && !(body as { allowEmpty?: boolean }).allowEmpty && (await listAdvertisers()).length > 1) return Response.json({ error: "빈 목록으로는 저장하지 않습니다." }, { status: 409 });
     await saveAdvertisers(list);
     return Response.json({ advertisers: list });
   } catch (error) {
