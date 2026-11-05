@@ -1127,3 +1127,12 @@ export const liveAdapter = {
     throw new Error("지원하지 않는 변경입니다.");
   },
 };
+
+// 임시 점검용: GFA 경로가 어떤 메서드를 받는지 읽기 전용(GET·OPTIONS)으로만 확인한다.
+export async function gfaProbe(method: "GET" | "OPTIONS", path: string) {
+  const config = gfaConfig();
+  if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
+  const response = await fetch(`${GFA_BASE}/${path.replace(/^\/+/, "")}`, { method, headers: { Authorization: `Bearer ${await gfaToken()}`, AccessManagerAccountNo: config.manager }, cache: "no-store" });
+  const text = await response.text();
+  return { method, path, status: response.status, allow: response.headers.get("allow") || "", body: text.slice(0, method === "GET" && /api-docs|swagger/.test(path) ? 200_000 : 400) };
+}
