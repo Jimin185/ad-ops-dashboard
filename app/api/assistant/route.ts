@@ -1,5 +1,6 @@
 import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import Anthropic from "@anthropic-ai/sdk";
+import { freeLlmConfig, runFreeAssistant } from "@/lib/free-llm";
 import { assistantTools, executeAssistantTool, type AssistantContext, type MixLineSummary } from "@/lib/assistant-tools";
 import type { MediaMix } from "@/lib/mix";
 import type { PendingAction } from "@/lib/types";
@@ -42,18 +43,26 @@ export async function POST(request: Request) {
 }
 
 async function handle(request: Request) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return Response.json({ error: "API 키 등록 필요", code: "ANTHROPIC_API_KEY_REQUIRED" }, { status: 503 });
-  }
-
   try {
     const started = Date.now();
-    const body = (await request.json()) as { continuation?: Continuation; attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
+    const body = (await request.json()) as { mode?: "auto" | "claude"; continuation?: Continuation; attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
     const cont = body.continuation;
     const history = (body.messages || []).slice(-20);
     if (!history.length && !cont?.messages?.length) return Response.json({ error: "메시지를 입력해 주세요." }, { status: 400 });
     const ctx: AssistantContext = { advertiserId: body.context?.advertiserId, advertiserName: body.context?.advertiserName, accountKeys: (body.context?.accountKeys || []).slice(0, 50), mixes: (body.context?.mixes || []).slice(0, 12), mixLineSummary: body.context?.mixLineSummary };
 
+    // 1) 조회 질문은 무료 모델이 먼저 답한다. 변경 요청·첨부·오류면 Claude로 넘긴다.
+    const screenLine = `[현재 화면] 광고주: ${ctx.advertiserName || "미선택"} · 매핑 계정 ${ctx.accountKeys.length}개 · 오늘(KST): ${seoulDate()}`;
+    let escalated = "";
+    if (!cont && freeLlmConfig() && !(body.attachments || []).length && body.mode !== "claude") {
+      const free = await runFreeAssistant(history, screenLine, ctx, request.signal, started + 40_000).catch((e) => ({ kind: "escalate" as const, reason: String(e).slice(0, 120) }));
+      if (request.signal.aborted) return new Response(null, { status: 499 });
+      if (free.kind === "answer") return Response.json({ message: free.text, pendingActions: [], mixDrafts: [], usage: free.usage, model: free.label });
+      escalated = free.reason;
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return Response.json({ error: escalated ? `이 요청은 Claude가 처리해야 하는데 Claude API 키가 없습니다. (${escalated})` : "API 키 등록 필요", code: "ANTHROPIC_API_KEY_REQUIRED" }, { status: 503 });
+    }
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const messages: Anthropic.Beta.BetaMessageParam[] = cont?.messages?.length ? cont.messages : history.map((message) => ({ role: message.role, content: message.content }));
     // 이번 메시지에 붙은 첨부 파일: 표·텍스트는 텍스트로, PDF·이미지는 Claude가 직접 읽게 넣는다
@@ -70,7 +79,7 @@ async function handle(request: Request) {
       messages[messages.length - 1] = { role: "user", content: blocks };
     }
     // 현재 화면의 광고주 정보는 매 요청 바뀌므로 캐시되는 system 프롬프트가 아니라 대화 끝에 붙인다.
-    if (!cont) messages.push({ role: "user", content: `[현재 화면] 광고주: ${ctx.advertiserName || "미선택"} · 매핑 계정 ${ctx.accountKeys.length}개 · 오늘(KST): ${seoulDate()}` });
+    if (!cont) messages.push({ role: "user", content: screenLine });
     const pendingActions: PendingAction[] = cont?.pendingActions || [];
     const mixDrafts: MediaMix[] = cont?.mixDrafts || [];
     let finalText = "";
@@ -123,7 +132,7 @@ async function handle(request: Request) {
       messages.push({ role: "user", content: toolResults });
     }
 
-    return Response.json({ message: finalText || "처리가 완료되었습니다.", pendingActions, mixDrafts, usage });
+    return Response.json({ message: finalText || "처리가 완료되었습니다.", pendingActions, mixDrafts, usage, model: "Claude" });
   } catch (error) {
     if (request.signal.aborted || error instanceof Anthropic.APIUserAbortError) return new Response(null, { status: 499 });
     if (error instanceof Anthropic.AuthenticationError) return Response.json({ error: "Claude API 키가 유효하지 않습니다. Vercel의 ANTHROPIC_API_KEY를 새 키로 교체해 주세요." }, { status: 503 });

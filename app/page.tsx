@@ -13,7 +13,7 @@ import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from ".
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type Attachment = { name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string };
-type ChatMessage = { role: "user" | "assistant"; content: string; attachments?: string[]; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number } };
+type ChatMessage = { role: "user" | "assistant"; content: string; attachments?: string[]; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number }; model?: string };
 type DashTab = "report" | "mix" | "ops" | "detail";
 const MIX_STORAGE = "adops-mixes";
 
@@ -577,7 +577,7 @@ export default function Dashboard() {
       }
       if (ok && data?.continue) data = { message: "작업 단계가 너무 많아 중간에 멈췄어요. 이어서 하려면 \"계속해\"라고 보내 주세요.", pendingActions: data.continue.pendingActions, mixDrafts: data.continue.mixDrafts, usage: data.usage };
       if (!chatOpenRef.current) setUnread(true);
-      setMessages((current) => [...current, { role: "assistant", content: ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts, usage: data.usage }]);
+      setMessages((current) => [...current, { role: "assistant", content: ok ? data.message : data.error, pendingActions: data.pendingActions, mixDrafts: data.mixDrafts, usage: data.usage, model: data.model }]);
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === "AbortError";
       setMessages((current) => [...current, { role: "assistant", content: aborted ? "응답을 중지했어요." : "서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요." }]);
@@ -596,7 +596,7 @@ export default function Dashboard() {
           {messages.map((message, index) => <div className={`message ${message.role}`} key={index}>
             <MarkdownLite value={message.content} />
             {message.attachments?.length ? <small className="attach-note">📎 {message.attachments.join(", ")}</small> : null}
-            {message.usage && <small className="usage-note">토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
+            {message.usage && <small className="usage-note">{message.model ? `${message.model}${message.model === "Claude" ? "" : " (무료)"} · ` : ""}토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
             {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
             {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(true); }} />)}
           </div>)}
