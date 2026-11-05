@@ -187,16 +187,19 @@ async function hashImages() {
 }
 
 // ---------- 분류·묶기·집계 ----------
-type Cls = "책상세트 확실" | "애매" | "모션데스크" | "아님";
-function classify(text: string): Cls {
-  const t = text.replace(/\s+/g, "");
-  if (/모션|높이조절|스탠딩|전동/.test(t)) return "모션데스크";
-  const set = /책상세트|데스크세트|책상\+책장|책상책장|학생책상세트/.test(t);
-  const kid = /학생|아이방|키즈|입학|신학기|공부방|초등|중학|고등|수험|스터디|자녀|어린이|학습/.test(t);
-  const desk = /책상|데스크|desk/i.test(t);
-  if (set && (kid || desk)) return "책상세트 확실";
-  if (kid && desk) return "책상세트 확실";
-  if (set || desk || kid) return "애매";
+type Cls = "책상세트 확실" | "애매" | "모션데스크" | "기타 책상" | "아님";
+// names = 캠페인·광고그룹·광고 이름, text = 소재 문구·링크
+function classify(names: string, text: string): Cls {
+  const n = names.replace(/\s+/g, ""), t = text.replace(/\s+/g, "");
+  if (/모션|포레그/.test(n)) return "모션데스크";
+  if (/독서실책상|컴퓨터데스크|사무용|B2B|오피스/.test(n)) return /독서실책상|컴퓨터데스크/.test(n) ? "기타 책상" : "아님";
+  const promo = /리빙러빙|퍼패페|브랜드데이|블랙프라이데이|메가위크|추석|공식몰프로모션|프로모션_/.test(n);
+  const kidName = /아이책상|책상세트|학생방|학생책상|신학기/.test(n);
+  const adult = /성인/.test(n);
+  if (kidName && !promo && !adult && !/체험단/.test(n)) return "책상세트 확실";
+  if (/모션데스크|모션테이블/.test(t) && !/책상세트/.test(t)) return "모션데스크";
+  if (kidName || /책상세트|아이책상|학생|신학기/.test(t)) return "애매";
+  if (/책상|데스크/.test(n + t)) return "기타 책상";
   return "아님";
 }
 const hamming = (a: string, b: string) => { let x = BigInt("0x" + a) ^ BigInt("0x" + b), n = 0; while (x) { n += Number(x & 1n); x >>= 1n; } return n; };
@@ -216,7 +219,7 @@ async function build() {
   for (const r of meta.rows) if (!ads.has(`meta_${r.aid}`)) { const c = metaCr[r.aid] || {}; ads.set(`meta_${r.aid}`, { key: `meta_${r.aid}`, channel: "meta", id: r.aid, acct: r.acct, cid: r.cid, cn: r.cn, sid: r.sid, sn: r.sn, name: r.an, text: c.text || "", link: c.link || "", urls: [], cls: "아님" }); }
   for (const r of gfa.rows) if (!ads.has(`gfa_${r.crid}`)) { const c = gfaCr[r.crid] || {}; ads.set(`gfa_${r.crid}`, { key: `gfa_${r.crid}`, channel: "gfa", id: r.crid, acct: r.acct, cid: r.cid, cn: gfaCamp[r.cid] || "", sid: r.sid || c.sid || "", sn: gfaSet[r.sid || c.sid] || "", name: c.name || `소재 ${r.crid}`, text: c.text || "", link: c.link || "", urls: [], cls: "아님" }); }
   for (const it of items) { const a = ads.get(it.key); if (a) a.urls = it.urls; }
-  for (const a of ads.values()) a.cls = overrides[a.key] || classify(`${a.cn} ${a.sn} ${a.name} ${a.text} ${a.link}`);
+  for (const a of ads.values()) a.cls = overrides[a.key] || classify(`${a.cn} ${a.sn} ${a.name}`, `${a.text} ${a.link}`);
 
   // 묶기: 같은 이미지 해시(Meta) 또는 dHash 거리 ≤ 8
   const parent = new Map<string, string>(); const find = (x: string): string => { const p = parent.get(x) || x; if (p === x) return x; const r = find(p); parent.set(x, r); return r; };
@@ -231,7 +234,7 @@ async function build() {
   let gi = 0; const groupList = [...groups.values()].map((list) => ({ gid: `G${String(++gi).padStart(4, "0")}`, list }));
   for (const g of groupList) for (const a of g.list) a.group = g.gid;
   // 그룹 분류: 구성원 중 가장 강한 분류
-  const rank: Record<Cls, number> = { "책상세트 확실": 3, "모션데스크": 2, "애매": 1, "아님": 0 };
+  const rank: Record<Cls, number> = { "책상세트 확실": 4, "모션데스크": 3, "기타 책상": 2, "애매": 1, "아님": 0 };
   const gcls = new Map(groupList.map((g) => [g.gid, g.list.reduce<Cls>((best, a) => rank[a.cls] > rank[best] ? a.cls : best, "아님")]));
 
   // 월별 행
@@ -244,14 +247,14 @@ async function build() {
     const a = ads.get(`meta_${r.aid}`)!; const p = r.a[pur] || [0, 0, 0], pv = r.av[pur] || [0, 0, 0], cs = r.cs[pur] || r.cs.omni_purchase || [0, 0, 0], csv = r.csv[pur] || r.csv.omni_purchase || [0, 0, 0];
     return { 월: r.m, 매체: "meta", 계정: r.acct, 캠페인ID: r.cid, 캠페인: r.cn, 광고그룹ID: r.sid, 광고그룹: r.sn, 광고ID: r.aid, 광고: r.an, 노출: r.imp, 클릭_전체: r.clk, 클릭_링크: r.lclk, 비용: r.spend,
       구매_기본: p[0], 구매_7d클릭: p[1], 구매_1d조회: p[2], 구매금액_기본: pv[0], 구매금액_7d클릭: pv[1], 공유항목구매_기본: cs[0], 공유항목구매_7d클릭: cs[1], 공유항목구매금액_기본: csv[0],
-      장바구니_기본: (r.a[cart] || [0])[0], 랜딩조회: (r.a[lpv] || [0])[0], 분류: gcls.get(a.group!) || a.cls, 소재그룹: a.group };
+      장바구니_기본: (r.a[cart] || [0])[0], 랜딩조회: (r.a[lpv] || [0])[0], 분류: a.cls, 소재그룹: a.group };
   });
   const gfaConvKeys = new Set<string>(); for (const r of gfa.rows) Object.keys(r.conv).forEach((k) => gfaConvKeys.add(k));
   const gfaRows = gfa.rows.map((r) => {
     const a = ads.get(`gfa_${r.crid}`)!;
     const sum = (re: RegExp, i: number) => Object.entries<any>(r.conv).filter(([k]) => re.test(k)).reduce((s, [, v]) => s + v[i], 0);
     const row: any = { 월: r.m, 매체: "gfa", 계정: r.acct, 캠페인ID: r.cid, 캠페인: a.cn, 광고그룹ID: a.sid, 광고그룹: a.sn, 소재ID: r.crid, 소재: a.name, 노출: r.imp, 클릭: r.clk, 비용: r.spend,
-      구매: sum(/^PURCHASE/, 0), 구매금액: sum(/^PURCHASE/, 1), 장바구니: sum(/^ADD_TO_CART|^CART/, 0), 분류: gcls.get(a.group!) || a.cls, 소재그룹: a.group };
+      구매: sum(/^PURCHASE/, 0), 구매금액: sum(/^PURCHASE/, 1), 장바구니: sum(/^ADD_TO_CART|^CART/, 0), 분류: a.cls, 소재그룹: a.group };
     for (const k of gfaConvKeys) if (k.includes("|")) row[`전환_${k}`] = (r.conv[k] || [0])[0];
     return row;
   });
@@ -264,7 +267,7 @@ async function build() {
   const byAcct = agg([...metaRows, ...gfaRows], (r) => `${r.매체}|${r.계정}`);
   const byMonthMediaGroup = agg(sure, (r) => `${r.월}|${r.매체}|${r.소재그룹}`);
   const groupsCsv = groupList.filter((g) => g.list.some((a) => [...metaRows, ...gfaRows].some(() => true))).map((g) => ({ 그룹ID: g.gid, 분류: gcls.get(g.gid), 설명: (g.list[0].text || g.list[0].name).slice(0, 80), 매체: [...new Set(g.list.map((a) => a.channel))].join("+"), 광고ID: g.list.map((a) => a.id).join(" "), 광고명: g.list.map((a) => a.name).join(" | ").slice(0, 1000), 이미지: g.list.flatMap((a) => a.urls.slice(0, 2)).slice(0, 6).join(" ") }));
-  const vague = [...ads.values()].filter((a) => (gcls.get(a.group!) || a.cls) === "애매");
+  const vague = [...ads.values()].filter((a) => a.cls === "애매");
   const oct = { meta: metaRows.filter((r) => r.월 === "2026-10").reduce((s, r) => s + r.비용, 0), gfa: gfaRows.filter((r) => r.월 === "2026-10").reduce((s, r) => s + r.비용, 0) };
   return { allByMonth, byAcct, pur, cart, lpv, metaTypes: [...metaTypes], gfaConvKeys: [...gfaConvKeys], missing: { meta: meta.missing, gfa: gfa.missing }, metaRows, gfaRows, byMonthMedia, byMonthMediaGroup, groupsCsv, groupList, gcls, vague, ads, oct };
 }
@@ -297,7 +300,7 @@ export async function GET(request: Request) {
       // 분류 검토용: 비용 있는 광고의 이름·문구·현재 분류
       const spend = new Map<string, number>(); for (const r of [...b.metaRows, ...b.gfaRows]) { const k = r.매체 === "meta" ? `meta_${r.광고ID}` : `gfa_${r.소재ID}`; spend.set(k, (spend.get(k) || 0) + r.비용); }
       const cls = q.get("cls");
-      const list = [...b.ads.values()].filter((a) => !cls || (b.gcls.get(a.group!) || a.cls) === cls).map((a) => ({ k: a.key, s: Math.round(spend.get(a.key) || 0), c: b.gcls.get(a.group!) || a.cls, g: a.group, n: `${a.cn} › ${a.sn} › ${a.name}`.slice(0, 160), t: a.text.slice(0, 120), l: a.link.slice(0, 80) })).filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
+      const list = [...b.ads.values()].filter((a) => !cls || a.cls === cls).map((a) => ({ k: a.key, s: Math.round(spend.get(a.key) || 0), c: a.cls, g: a.group, n: `${a.cn} › ${a.sn} › ${a.name}`.slice(0, 160), t: a.text.slice(0, 120), l: a.link.slice(0, 80) })).filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
       const off = Number(q.get("offset") || 0); return Response.json({ total: list.length, items: list.slice(off, off + Number(q.get("limit") || 150)) });
     }
     if (op === "file") {
