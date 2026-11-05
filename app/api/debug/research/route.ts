@@ -257,14 +257,16 @@ async function build() {
   });
 
   // 집계 (책상세트 확실)
-  const agg = (rows: any[], keyFn: (r: any) => string) => { const m = new Map<string, any>(); for (const r of rows) { const k = keyFn(r); const o = m.get(k) || m.set(k, { key: k, 비용: 0, 노출: 0, 클릭: 0, 구매_기본: 0, 구매_클릭: 0, 구매금액: 0 }).get(k); o.비용 += r.비용; o.노출 += r.노출; o.클릭 += r.클릭_링크 ?? r.클릭; o.구매_기본 += r.구매_기본 ?? r.구매; o.구매_클릭 += r.구매_7d클릭 ?? r.구매; o.구매금액 += r.구매금액_기본 ?? r.구매금액; } return [...m.values()].map((o) => ({ ...o, CPA_기본: o.구매_기본 ? Math.round(o.비용 / o.구매_기본) : null, CPA_클릭: o.구매_클릭 ? Math.round(o.비용 / o.구매_클릭) : null })); };
+  const agg = (rows: any[], keyFn: (r: any) => string) => { const m = new Map<string, any>(); for (const r of rows) { const k = keyFn(r); const o = m.get(k) || m.set(k, { key: k, 비용: 0, 노출: 0, 클릭: 0, 구매_기본: 0, 구매_클릭: 0, 구매금액: 0, 공유구매_기본: 0, 공유구매_클릭: 0, 공유구매금액: 0 }).get(k); o.비용 += r.비용; o.노출 += r.노출; o.클릭 += r.클릭_링크 ?? r.클릭; o.구매_기본 += r.구매_기본 ?? r.구매; o.구매_클릭 += r.구매_7d클릭 ?? r.구매; o.구매금액 += r.구매금액_기본 ?? r.구매금액; o.공유구매_기본 += r.공유항목구매_기본 || 0; o.공유구매_클릭 += r.공유항목구매_7d클릭 || 0; o.공유구매금액 += r.공유항목구매금액_기본 || 0; } return [...m.values()].map((o) => ({ ...o, CPA_기본: o.구매_기본 ? Math.round(o.비용 / o.구매_기본) : null, CPA_클릭: o.구매_클릭 ? Math.round(o.비용 / o.구매_클릭) : null })); };
   const sure = [...metaRows, ...gfaRows].filter((r) => r.분류 === "책상세트 확실");
   const byMonthMedia = agg(sure, (r) => `${r.월}|${r.매체}`);
+  const allByMonth = agg([...metaRows, ...gfaRows], (r) => `${r.월}|${r.매체}|${r.분류}`);
+  const byAcct = agg([...metaRows, ...gfaRows], (r) => `${r.매체}|${r.계정}`);
   const byMonthMediaGroup = agg(sure, (r) => `${r.월}|${r.매체}|${r.소재그룹}`);
   const groupsCsv = groupList.filter((g) => g.list.some((a) => [...metaRows, ...gfaRows].some(() => true))).map((g) => ({ 그룹ID: g.gid, 분류: gcls.get(g.gid), 설명: (g.list[0].text || g.list[0].name).slice(0, 80), 매체: [...new Set(g.list.map((a) => a.channel))].join("+"), 광고ID: g.list.map((a) => a.id).join(" "), 광고명: g.list.map((a) => a.name).join(" | ").slice(0, 1000), 이미지: g.list.flatMap((a) => a.urls.slice(0, 2)).slice(0, 6).join(" ") }));
   const vague = [...ads.values()].filter((a) => (gcls.get(a.group!) || a.cls) === "애매");
   const oct = { meta: metaRows.filter((r) => r.월 === "2026-10").reduce((s, r) => s + r.비용, 0), gfa: gfaRows.filter((r) => r.월 === "2026-10").reduce((s, r) => s + r.비용, 0) };
-  return { pur, cart, lpv, metaTypes: [...metaTypes], gfaConvKeys: [...gfaConvKeys], missing: { meta: meta.missing, gfa: gfa.missing }, metaRows, gfaRows, byMonthMedia, byMonthMediaGroup, groupsCsv, groupList, gcls, vague, ads, oct };
+  return { allByMonth, byAcct, pur, cart, lpv, metaTypes: [...metaTypes], gfaConvKeys: [...gfaConvKeys], missing: { meta: meta.missing, gfa: gfa.missing }, metaRows, gfaRows, byMonthMedia, byMonthMediaGroup, groupsCsv, groupList, gcls, vague, ads, oct };
 }
 
 const csv = (rows: any[]) => { if (!rows.length) return ""; const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))]; const esc = (v: any) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }; return "﻿" + [keys.join(","), ...rows.map((r) => keys.map((k) => esc(r[k])).join(","))].join("\n"); };
@@ -289,7 +291,7 @@ export async function GET(request: Request) {
       const pick = (m: string) => b.byMonthMedia.filter((x) => x.key.startsWith(m));
       return Response.json({ pur: b.pur, cart: b.cart, lpv: b.lpv, metaTypes: b.metaTypes, gfaConvKeys: b.gfaConvKeys, missing: b.missing, oct: b.oct,
         counts: { metaRows: b.metaRows.length, gfaRows: b.gfaRows.length, ads: b.ads.size, groups: b.groupList.length, sure: b.groupsCsv.filter((g) => g.분류 === "책상세트 확실").length, vague: b.vague.length },
-        byMonthMedia: b.byMonthMedia.sort((x, y) => x.key.localeCompare(y.key)), dec: pick("2025-12"), nov: pick("2026-11") });
+        byMonthMedia: b.byMonthMedia.sort((x, y) => x.key.localeCompare(y.key)), byAcct: b.byAcct, all: q.get("all") ? b.allByMonth.sort((x, y) => x.key.localeCompare(y.key)) : undefined, dec: pick("2025-12"), nov: pick("2026-11") });
     }
     if (op === "names") {
       // 분류 검토용: 비용 있는 광고의 이름·문구·현재 분류
