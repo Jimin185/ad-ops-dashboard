@@ -14,6 +14,11 @@ export async function GET(request: Request) {
   if (new URL(request.url).searchParams.get("free")) {
     const cfg = freeLlmConfig();
     if (!cfg) return Response.json({ ok: false, free: true, error: "FREE_LLM_API_KEY 없음" });
+    if (new URL(request.url).searchParams.get("models")) {
+      const r = await fetch(`${cfg.base}/models`, { headers: { Authorization: `Bearer ${cfg.key}` } });
+      const j = await r.json().catch(() => ({}));
+      return Response.json({ status: r.status, models: (j.data || []).map((m: any) => m.id) });
+    }
     const res = await fetch(`${cfg.base}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: cfg.model, messages: [{ role: "user", content: "한 단어로 인사해" }] }) });
     const text = await res.text();
     return Response.json({ ok: res.ok, free: true, label: cfg.label, model: cfg.model, status: res.status, ms: Date.now() - started, body: text.slice(0, 400) });
