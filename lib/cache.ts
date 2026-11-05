@@ -27,6 +27,23 @@ export async function cacheGet<T>(key: string): Promise<{ value: T; updatedAt: n
   } catch { return null; }
 }
 
+/** 만료됐어도 남아 있는 값을 돌려준다(stale 표시 포함). 화면은 먼저 띄우고 뒤에서 새로 받을 때 쓴다. */
+export async function cacheGetStale<T>(key: string, maxAgeMs: number): Promise<{ value: T; updatedAt: number; stale: boolean } | null> {
+  const now = Date.now();
+  const hit = memory.get(key);
+  if (hit && now - hit.updatedAt < maxAgeMs) return { value: hit.value as T, updatedAt: hit.updatedAt, stale: hit.expiresAt !== null && hit.expiresAt <= now };
+  try {
+    const sql = await db();
+    if (!sql) return null;
+    const [row] = await sql`select value, expires_at, updated_at from adops_cache where key = ${key}`;
+    if (!row) return null;
+    const entry = { value: row.value, expiresAt: row.expires_at ? new Date(row.expires_at).getTime() : null, updatedAt: new Date(row.updated_at).getTime() };
+    if (now - entry.updatedAt >= maxAgeMs) return null;
+    memory.set(key, entry);
+    return { value: row.value as T, updatedAt: entry.updatedAt, stale: entry.expiresAt !== null && entry.expiresAt <= now };
+  } catch { return null; }
+}
+
 export async function cacheSet(key: string, value: unknown, expiresAt: number | null) {
   const entry = { value, expiresAt, updatedAt: Date.now() };
   memory.set(key, entry);

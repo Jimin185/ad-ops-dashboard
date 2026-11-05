@@ -324,3 +324,6 @@ body { background:#fff; color:#323232; }
 .chat-fab-dot { position:absolute; top:8px; right:8px; width:12px; height:12px; border-radius:50%; background:#e5484d; border:2px solid #fff; }
 .chat-fab-dot.busy { background:#f5a623; animation:fabPulse 1.2s ease-in-out infinite; }
 @keyframes fabPulse { 50% { opacity:.35; } }
+.spinner { display:inline-block; width:22px; height:22px; border:3px solid #e3e3df; border-top-color:var(--green, #1f6b45); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:8px; }
+.spinner.inline { width:14px; height:14px; border-width:2px; margin:0 6px -2px 0; }
+@keyframes spin { to { transform:rotate(360deg); } }

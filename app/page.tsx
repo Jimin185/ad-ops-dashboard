@@ -138,6 +138,9 @@ export default function Dashboard() {
   const [advertisers, setAdvertisers] = useState<Advertiser[]>([]);
   const [selectedAdvertiserId, setSelectedAdvertiserId] = useState("");
   const [view, setView] = useState<"select" | "mapping" | "dashboard" | "market" | "insights">("select");
+  // 시장·광고인사이트는 광고주 선택 화면과 광고주 대시보드 양쪽에서 열 수 있고, 연 곳으로 돌아간다.
+  const [insightFrom, setInsightFrom] = useState<"select" | "dashboard">("select");
+  const openInsight = (target: "market" | "insights") => { setInsightFrom(view === "dashboard" ? "dashboard" : "select"); setView(target); };
   const [campaignQuery, setCampaignQuery] = useState("");
   const [opsFilter, setOpsFilter] = useState<Filter>(EMPTY_FILTER);
   const [balances, setBalances] = useState<Array<{ customerId: string; bizmoney?: number; budgetLock?: boolean; error?: string }>>([]);
@@ -611,7 +614,7 @@ export default function Dashboard() {
 
   if (view === "market") return (
     <main>
-      <header><div><span className="eyebrow">CREATIP · MARKET INSIGHT</span><h1>시장 인사이트</h1><p>키워드 검색량·트렌드와 뉴스·블로그·카페 반응으로 시장 상황을 확인합니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
+      <header><div><span className="eyebrow">CREATIP · MARKET INSIGHT</span><h1>시장 인사이트</h1><p>키워드 검색량·트렌드와 뉴스·블로그·카페 반응으로 시장 상황을 확인합니다.</p></div><button className="secondary" onClick={() => setView(insightFrom)}>{insightFrom === "dashboard" ? `← ${selectedAdvertiser?.name || "대시보드"}로` : "광고주 선택으로"}</button></header>
       <MarketView onAsk={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} />
       {chatUi}
     </main>
@@ -619,7 +622,7 @@ export default function Dashboard() {
 
   if (view === "insights") return (
     <main>
-      <header><div><span className="eyebrow">CREATIP · AD INSIGHT</span><h1>광고인사이트</h1><p>광고주 전체의 월별 성과를 광고상품별로 비교하고, 팀이 발견한 인사이트를 공유합니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
+      <header><div><span className="eyebrow">CREATIP · AD INSIGHT</span><h1>광고인사이트</h1><p>광고주 전체의 월별 성과를 광고상품별로 비교하고, 팀이 발견한 인사이트를 공유합니다.</p></div><button className="secondary" onClick={() => setView(insightFrom)}>{insightFrom === "dashboard" ? `← ${selectedAdvertiser?.name || "대시보드"}로` : "광고주 선택으로"}</button></header>
       <InsightsView advertisers={advertisers} accounts={accounts} apiFetch={apiFetch} onAsk={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} />
       {chatUi}
     </main>
@@ -627,12 +630,12 @@ export default function Dashboard() {
 
   if (view === "select") return (
     <main>
-      <header><div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>광고주 선택</h1><p>운영할 광고주를 선택하면 연결된 매체 계정을 한 번에 불러옵니다.</p></div><div className="header-actions"><button className="secondary" onClick={() => setView("market")}>🔎 시장 인사이트</button><button className="secondary" onClick={() => setView("insights")}>📊 광고인사이트</button><button className="secondary" onClick={() => setView("mapping")}>광고계정 매핑</button></div></header>
+      <header><div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>광고주 선택</h1><p>운영할 광고주를 선택하면 연결된 매체 계정을 한 번에 불러옵니다.</p></div><div className="header-actions"><button className="secondary" onClick={() => openInsight("market")}>🔎 시장 인사이트</button><button className="secondary" onClick={() => openInsight("insights")}>📊 광고인사이트</button><button className="secondary" onClick={() => setView("mapping")}>광고계정 매핑</button></div></header>
       <section className="advertiser-picker">
         <div className="advertiser-grid">{advertisers.map((advertiser) => <button key={advertiser.id} onClick={() => { setSelectedAdvertiserId(advertiser.id); setView("dashboard"); }}><b>{advertiser.name}</b><span>{advertiser.accountKeys.length}개 광고계정</span></button>)}</div>
         {!advertisers.length && (advertisersFailed
           ? <div className="empty-state"><b>광고주 목록을 불러오지 못했어요.</b><span>{storageError || "서버가 잠시 응답하지 않았어요."} <button className="link-button" onClick={() => window.location.reload()}>다시 불러오기</button></span></div>
-          : storageMode === "loading" ? <div className="empty-state"><b>광고주 목록을 불러오는 중…</b></div>
+          : storageMode === "loading" ? <div className="empty-state"><span className="spinner" /><b>광고주 목록을 불러오는 중…</b></div>
           : <div className="empty-state"><b>등록된 광고주가 없습니다.</b><span>먼저 광고주를 만들고 광고계정을 매핑해 주세요.</span></div>)}
         <button className="primary" onClick={createAdvertiser}>+ 광고주 만들기</button>
       </section>
@@ -695,7 +698,7 @@ export default function Dashboard() {
     <main>
       <header>
         <div><span className="eyebrow">CREATIP · AD OPERATIONS</span><h1>{selectedAdvertiser?.name || "광고 운영"} 대시보드</h1><p>수동 조작과 자연어 운영을 한 화면에서 관리합니다.</p></div>
-        <div className="header-actions"><button className="secondary" onClick={() => setView("select")}>광고주 변경</button><button className="secondary" onClick={() => setView("mapping")}>계정 매핑</button><div className={`mode ${mode === "mock" ? "demo" : "live"}`}><span />{mode === "mock" ? "DEMO DATA" : "LIVE API"}</div></div>
+        <div className="header-actions"><button className="secondary" onClick={() => setView("select")}>광고주 변경</button><button className="secondary" onClick={() => openInsight("market")}>🔎 시장 인사이트</button><button className="secondary" onClick={() => openInsight("insights")}>📊 광고인사이트</button><button className="secondary" onClick={() => setView("mapping")}>계정 매핑</button>{mode === "mock" && <div className="mode demo"><span />DEMO DATA</div>}</div>
       </header>
 
       <nav className="view-tabs" aria-label="화면 전환">
@@ -749,7 +752,7 @@ export default function Dashboard() {
             <table className="campaign-table ops-table">
               <thead><tr><th className="check-col"><input type="checkbox" aria-label="전체 선택" checked={visibleCampaigns.length > 0 && visibleCampaigns.every((c) => selection.has(c.id))} onChange={(e) => toggleMany(visibleCampaigns.map((c) => ({ id: c.id, channel: c.channel, entityType: "campaign" as const, name: c.name })), e.target.checked)} /></th><th>채널</th><th>캠페인</th><th>일예산</th><th>광고비</th><th>ROAS</th><th>상태</th></tr></thead>
               <tbody>
-                {loading ? <tr><td colSpan={7}>불러오는 중…</td></tr> : !loadError && visibleCampaigns.length === 0 ? <tr><td colSpan={7}>{scopedCampaigns.length ? (query ? "검색 결과가 없습니다." : `운영 중인 캠페인이 없습니다. 꺼짐/종료 ${hiddenCount}개는 '꺼짐/종료 포함'을 켜면 보여요.`) : advertiserCampaigns.length ? "선택한 필터에 맞는 캠페인이 없습니다." : unmappedCount > 0
+                {loading && !campaigns.length ? <tr><td colSpan={7}><span className="spinner inline" /> 캠페인 불러오는 중…</td></tr> : !loadError && visibleCampaigns.length === 0 ? <tr><td colSpan={7}>{scopedCampaigns.length ? (query ? "검색 결과가 없습니다." : `운영 중인 캠페인이 없습니다. 꺼짐/종료 ${hiddenCount}개는 '꺼짐/종료 포함'을 켜면 보여요.`) : advertiserCampaigns.length ? "선택한 필터에 맞는 캠페인이 없습니다." : unmappedCount > 0
                   ? <>캠페인 {unmappedCount.toLocaleString()}개가 있지만 이 광고주에 매핑된 계정이 없습니다. <button className="secondary" onClick={() => setView("mapping")}>계정 매핑하기</button></>
                   : "이 광고주에 매핑된 캠페인이 없습니다."}</td></tr> : visibleCampaigns.map((campaign) => [
                   <tr key={campaign.id} id={`row-${campaign.id}`} className={`${isRunning(campaign) ? "" : "inactive-row"} ${selectedCampaign?.id === campaign.id ? "open-row" : ""}`} onClick={() => selectedCampaign?.id === campaign.id ? setSelectedCampaign(null) : void openCampaign(campaign)}>
