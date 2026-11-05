@@ -1134,5 +1134,5 @@ export async function gfaProbe(method: "GET" | "OPTIONS", path: string) {
   if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
   const response = await fetch(`${GFA_BASE}/${path.replace(/^\/+/, "")}`, { method, headers: { Authorization: `Bearer ${await gfaToken()}`, AccessManagerAccountNo: config.manager }, cache: "no-store" });
   const text = await response.text();
-  return { method, path, status: response.status, allow: response.headers.get("allow") || "", body: text.slice(0, method === "GET" && /api-docs|swagger/.test(path) ? 200_000 : 400) };
+  return { method, path, status: response.status, allow: response.headers.get("allow") || "", body: text.slice(0, 60_000) };
 }
