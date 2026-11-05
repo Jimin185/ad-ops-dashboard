@@ -196,7 +196,7 @@ function classify(names: string, text: string): Cls {
   const promo = /리빙러빙|퍼패페|브랜드데이|블랙프라이데이|메가위크|추석|공식몰프로모션|프로모션_/.test(n);
   const kidName = /아이책상|책상세트|학생방|학생책상|신학기/.test(n);
   const adult = /성인/.test(n);
-  if (kidName && !promo && !adult && !/체험단/.test(n)) return "책상세트 확실";
+  if (kidName && !promo && !adult && !/체험단모집|후기이벤트/.test(n)) return "책상세트 확실";
   if (/모션데스크|모션테이블/.test(t) && !/책상세트/.test(t)) return "모션데스크";
   if (kidName || /책상세트|아이책상|학생|신학기/.test(t)) return "애매";
   if (/책상|데스크/.test(n + t)) return "기타 책상";
