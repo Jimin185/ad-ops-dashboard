@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 type ClientMessage = { role: "user" | "assistant"; content: string };
+type Continuation = { messages: Anthropic.Beta.BetaMessageParam[]; pendingActions: PendingAction[]; mixDrafts: MediaMix[]; usage: { input: number; output: number; cached: number }; step: number };
 
 function seoulDate() {
   return new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full" }).format(new Date());
@@ -46,16 +47,18 @@ async function handle(request: Request) {
   }
 
   try {
-    const body = (await request.json()) as { attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
+    const started = Date.now();
+    const body = (await request.json()) as { continuation?: Continuation; attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
+    const cont = body.continuation;
     const history = (body.messages || []).slice(-20);
-    if (!history.length) return Response.json({ error: "메시지를 입력해 주세요." }, { status: 400 });
+    if (!history.length && !cont?.messages?.length) return Response.json({ error: "메시지를 입력해 주세요." }, { status: 400 });
     const ctx: AssistantContext = { advertiserId: body.context?.advertiserId, advertiserName: body.context?.advertiserName, accountKeys: (body.context?.accountKeys || []).slice(0, 50), mixes: (body.context?.mixes || []).slice(0, 12), mixLineSummary: body.context?.mixLineSummary };
 
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const messages: Anthropic.Beta.BetaMessageParam[] = history.map((message) => ({ role: message.role, content: message.content }));
+    const messages: Anthropic.Beta.BetaMessageParam[] = cont?.messages?.length ? cont.messages : history.map((message) => ({ role: message.role, content: message.content }));
     // 이번 메시지에 붙은 첨부 파일: 표·텍스트는 텍스트로, PDF·이미지는 Claude가 직접 읽게 넣는다
     const files = (body.attachments || []).slice(0, 5);
-    if (files.length && messages.length && messages[messages.length - 1].role === "user") {
+    if (!cont && files.length && messages.length && messages[messages.length - 1].role === "user") {
       const last = messages[messages.length - 1];
       const blocks: any[] = [];
       for (const f of files) {
@@ -67,16 +70,24 @@ async function handle(request: Request) {
       messages[messages.length - 1] = { role: "user", content: blocks };
     }
     // 현재 화면의 광고주 정보는 매 요청 바뀌므로 캐시되는 system 프롬프트가 아니라 대화 끝에 붙인다.
-    messages.push({ role: "user", content: `[현재 화면] 광고주: ${ctx.advertiserName || "미선택"} · 매핑 계정 ${ctx.accountKeys.length}개 · 오늘(KST): ${seoulDate()}` });
-    const pendingActions: PendingAction[] = [];
-    const mixDrafts: MediaMix[] = [];
+    if (!cont) messages.push({ role: "user", content: `[현재 화면] 광고주: ${ctx.advertiserName || "미선택"} · 매핑 계정 ${ctx.accountKeys.length}개 · 오늘(KST): ${seoulDate()}` });
+    const pendingActions: PendingAction[] = cont?.pendingActions || [];
+    const mixDrafts: MediaMix[] = cont?.mixDrafts || [];
     let finalText = "";
-    const usage = { input: 0, output: 0, cached: 0 };
+    const usage = cont?.usage || { input: 0, output: 0, cached: 0 };
+    const firstStep = cont?.step || 0;
+    // Vercel 함수는 60초에 끊긴다. 시간이 모자라면 지금까지의 대화를 돌려주고 브라우저가 이어서 다시 부른다.
+    const pause = (step: number) => Response.json({ continue: { messages, pendingActions, mixDrafts, usage, step } satisfies Continuation, usage });
 
     // 사용자가 중지를 누르면(연결 끊김) 다음 단계로 넘어가지 않고, 진행 중인 Claude 호출도 취소한다.
-    for (let iteration = 0; iteration < 12; iteration += 1) {
+    for (let iteration = firstStep; iteration < 16; iteration += 1) {
       if (request.signal.aborted) return new Response(null, { status: 499 });
-      const response = await anthropic.beta.messages.create({
+      const elapsed = Date.now() - started;
+      if (iteration > firstStep && elapsed > 30_000) return pause(iteration);
+      const callTimeout = AbortSignal.timeout(Math.max(5_000, 55_000 - elapsed));
+      let response: Anthropic.Beta.BetaMessage;
+      try {
+        response = await anthropic.beta.messages.create({
         model: "claude-opus-5-5",
         max_tokens: 16000,
         output_config: { effort: "medium" },
@@ -85,7 +96,12 @@ async function handle(request: Request) {
         system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
         tools: assistantTools as any,
         messages,
-      }, { signal: request.signal });
+      }, { signal: AbortSignal.any([request.signal, callTimeout]) });
+      } catch (error) {
+        // 이 단계의 Claude 호출만 시간이 모자랐다: 사용자가 중지한 게 아니면 새 요청에서 이 단계부터 다시 한다.
+        if (!request.signal.aborted && callTimeout.aborted) return pause(iteration);
+        throw error;
+      }
 
       usage.input += response.usage.input_tokens; usage.output += response.usage.output_tokens; usage.cached += response.usage.cache_read_input_tokens || 0;
       messages.push({ role: "assistant", content: response.content as any });
