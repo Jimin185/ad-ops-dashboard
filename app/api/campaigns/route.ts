@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { cacheGet, cacheSet } from "@/lib/cache";
+import { after } from "next/server";
+import { cacheGet, cacheGetStale, cacheSet } from "@/lib/cache";
 import { NAVER_SA_HEADER, withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import { getAdapter } from "@/lib/adapters";
 import { getLiveSnapshot } from "@/lib/adapters/live";
@@ -17,8 +18,17 @@ async function handle(request: Request) {
       const refresh = new URL(request.url).searchParams.get("refresh") === "1";
       const registered = request.headers.get(NAVER_SA_HEADER) || "";
       const key = `campaigns:${new Date().toISOString().slice(0, 7)}:${createHash("sha1").update(registered).digest("hex").slice(0, 12)}`;
-      const cached = refresh ? null : await cacheGet<any>(key);
-      if (cached) return Response.json({ ...cached.value, mode: "live", fetchedAt: new Date(cached.updatedAt).toISOString(), cached: true });
+      // 30분이 지나도 하루 안의 값이면 먼저 바로 보여주고, 새 값은 뒤에서 받아 캐시에 넣는다(다음 요청부터 반영).
+      const cached = refresh ? null : await cacheGetStale<any>(key, 26 * 3600_000);
+      if (cached) {
+        if (cached.stale) after(async () => {
+          const lock = `${key}:refreshing`;
+          if (await cacheGet(lock)) return;
+          await cacheSet(lock, 1, Date.now() + 5 * 60_000);
+          try { await cacheSet(key, await getLiveSnapshot(true), Date.now() + 30 * 60_000); } catch { /* 다음 요청에서 다시 시도 */ }
+        });
+        return Response.json({ ...cached.value, mode: "live", fetchedAt: new Date(cached.updatedAt).toISOString(), cached: true, stale: cached.stale });
+      }
       const snapshot = await getLiveSnapshot(true);
       await cacheSet(key, snapshot, Date.now() + 30 * 60_000);
       return Response.json({ ...snapshot, mode: "live", fetchedAt: new Date().toISOString(), cached: false });
