@@ -1129,3 +1129,6 @@ export const liveAdapter = {
   },
 };
 
+
+// 임시(조사용 브랜치 전용): 조회 헬퍼 노출
+export const researchApi = { metaGet, jsonFetch, gfaGet, gfaPaged };
