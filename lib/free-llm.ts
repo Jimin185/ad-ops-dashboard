@@ -9,7 +9,7 @@ export function freeLlmConfig() {
   const key = process.env.FREE_LLM_API_KEY || process.env.GEMINI_API_KEY;
   if (!key) return null;
   const base = (process.env.FREE_LLM_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/+$/, "");
-  const model = process.env.FREE_LLM_MODEL || "gemini-2.5-flash";
+  const model = process.env.FREE_LLM_MODEL || "gemini-3.8-flash";
   const label = process.env.FREE_LLM_LABEL || (base.includes("groq") ? "Groq" : base.includes("googleapis") ? "Gemini" : "무료 모델");
   return { key, base, model, label };
 }
