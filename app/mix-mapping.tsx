@@ -232,16 +232,17 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         const note = [convNote, baseNote].filter(Boolean).join(" · ");
         const flat = c.channel === "naver_sa" && (c.product || "").includes("브랜드");
         if (flat) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "브랜드검색은 정액제 — 일예산 없음")); continue; }
-        const gvideo = c.channel === "google_ads" && (c.product || "").includes("동영상");
-        if (gvideo) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "구글 영상 캠페인은 API 수정 불가 — 구글애즈에서 수동 변경 (권장값 참고)")); continue; }
+        const gmanual = c.channel === "google_ads" && /동영상|디맨드젠/.test(c.product || "");
+        if (gmanual) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", `구글 ${(c.product || "").includes("동영상") ? "영상" : "디맨드젠"} 캠페인은 API 수정 불가 — 구글애즈에서 수동 변경 (권장값 참고)`)); continue; }
         // 캠페인 총예산(CBO lifetime)을 쓰면 광고세트 예산 설정이 매체에서 거절된다 (Meta subcode 1885621)
         if (!c.dailyBudget && c.lifetimeBudget) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "캠페인 총예산(CBO) 사용 — 일예산 없음, 매체 화면에서 총예산으로 관리 (권장 일액 참고)")); continue; }
         const groups = groupsByCampaign.get(c.id);
         if (!c.dailyBudget && c.channel !== "google_ads") {
           // 캠페인 예산 없음 → 광고그룹(광고세트) 예산으로 배분: 기존 그룹예산 비중대로, 없으면 균등
-          const act = (groups || []).filter((g) => g.active ?? g.status === "on");
-          const usable = act.length ? act : groups || [];
-          if (!usable.length) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "캠페인 예산이 없고 광고그룹도 못 찾음 — 수동 확인")); continue; }
+          if (!groups) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "광고그룹 조회 실패 (일시 오류) — '일예산 맞추기'를 다시 누르면 이 캠페인만 재시도해요")); continue; }
+          const act = groups.filter((g) => g.active ?? g.status === "on");
+          const usable = act.length ? act : groups;
+          if (!usable.length) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "캠페인에도 광고그룹에도 일예산이 없음 — 매체 화면에서 확인")); continue; }
           const bsum = usable.reduce((s, g) => s + (g.dailyBudget || 0), 0);
           for (const g of usable) {
             const gshare = bsum > 0 ? (g.dailyBudget || 0) / bsum : 1 / usable.length;
@@ -268,14 +269,20 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
       const targets = [...new Map(needGroups.map((c) => [c.id, c])).values()].filter((c) => !groupsByCampaign.has(c.id));
       let done = 0;
       if (targets.length) setBusy(`예산 단위(광고그룹)를 확인하는 중… 0/${targets.length}`);
-      await Promise.all(targets.map(async (c) => {
-        try {
-          const res = await (apiFetch || fetch)(`/api/entities?channel=${c.channel}&campaignId=${encodeURIComponent(c.id)}`);
-          const data = await res.json();
-          if (res.ok) groupsByCampaign.set(c.id, data.adgroups || []);
-        } catch { /* 이 캠페인은 캠페인 단위로 시도 */ }
-        finally { done += 1; setBusy(`예산 단위(광고그룹)를 확인하는 중… ${done}/${targets.length}`); }
-      }));
+      // 한꺼번에 쏘면 GFA가 429를 돌려줘 '못 찾음'이 돼버린다 → 3개씩, 실패는 1번 재시도
+      const fetchGroups = async (c: Campaign) => {
+        const res = await (apiFetch || fetch)(`/api/entities?channel=${c.channel}&campaignId=${encodeURIComponent(c.id)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "조회 실패");
+        return data.adgroups || [];
+      };
+      for (let i = 0; i < targets.length; i += 3) {
+        await Promise.all(targets.slice(i, i + 3).map(async (c) => {
+          try { groupsByCampaign.set(c.id, await fetchGroups(c)); }
+          catch { try { await new Promise((r) => setTimeout(r, 800)); groupsByCampaign.set(c.id, await fetchGroups(c)); } catch { /* 플랜에 '조회 실패'로 표시 */ } }
+          finally { done += 1; setBusy(`예산 단위(광고그룹)를 확인하는 중… ${done}/${targets.length}`); }
+        }));
+      }
       computePlan(groupsByCampaign);
     } finally { setBusy(""); }
   }
