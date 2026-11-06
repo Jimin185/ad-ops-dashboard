@@ -74,6 +74,12 @@ export const mockAdapter = {
       return { success: true, changed: created.length, data: created };
     }
     if (operation.kind === "media_plan") return { success: false, completed: 0, error: "데모 모드에서는 매체 세팅을 실행할 수 없습니다." };
+    if (operation.kind === "replace_text_ad") {
+      if (operation.deleteAdId) { const i = ads.findIndex((a) => a.id === operation.deleteAdId); if (i >= 0) ads.splice(i, 1); }
+      const created = { id: `created-${Date.now()}`, adgroupId: operation.adgroupId, channel: "naver_sa" as const, name: operation.headline, status: "on" as const, landingUrl: operation.pcUrl };
+      ads.push(created);
+      return { success: true, changed: 1, data: created };
+    }
     if (operation.kind === "update_landing") {
       const ad = ads.find((row) => row.id === operation.id && row.channel === operation.channel);
       if (!ad) throw new Error("변경 대상을 찾을 수 없습니다.");

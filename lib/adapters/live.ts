@@ -696,7 +696,7 @@ async function metaCreatives(accountId: string, since: string, until: string): P
     // 썸네일은 400px로 요청한다 (기본 64px는 너무 작음)
     Object.assign(details, await metaGet("", { ids, fields: "effective_status,creative.thumbnail_width(400).thumbnail_height(400){thumbnail_url,image_url,title,body,object_story_spec}" }));
   }
-  return top.map((row: any) => {
+  const mapped = top.map((row: any) => {
     const creative = details[row.ad_id]?.creative || {};
     const link = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
     return { id: row.ad_id, channel: "meta" as const, accountId, campaignId: packed("meta", accountId, String(row.campaign_id)), name: row.ad_name, campaignName: row.campaign_name, groupName: row.adset_name,
@@ -705,6 +705,8 @@ async function metaCreatives(accountId: string, since: string, until: string): P
       status: details[row.ad_id]?.effective_status, spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
       conversions: metaConv(row, kpiTypes), revenue: metaRev(row, kpiTypes) };
   });
+  // 인스턴트 경험 소재는 링크가 캔버스 문서라, 캔버스 안 버튼의 실제 랜딩으로 바꿔 준다
+  return resolveCanvasLandings(mapped);
 }
 
 // GFA 소재: 소재 목록 + 소재 단위 과거 성과
@@ -784,6 +786,34 @@ async function googleCreatives(accountId: string, since: string, until: string):
   });
 }
 
+/**
+ * 인스턴트 경험(캔버스) 광고의 실제 랜딩. 소재 링크가 fb.com/canvas_doc/{id}면
+ * 캔버스 본문(body_elements)을 열어 버튼이 가리키는 외부 URL을 찾아낸다 (14일 캐시).
+ */
+async function metaCanvasLanding(link?: string): Promise<string | undefined> {
+  const m = String(link || "").match(/fb\.com\/canvas_doc\/(\d+)/);
+  if (!m) return undefined;
+  const key = `canvas-url:v1:${m[1]}`;
+  const cached = await cacheGet<string>(key);
+  if (cached) return cached.value || undefined;
+  let url = "";
+  try {
+    const body = await metaGet(m[1], { fields: "body_elements" });
+    const text = JSON.stringify(body).replace(/\\\//g, "/");
+    url = (text.match(/https?:\/\/[^"\\\s]+/g) || []).find((u) => !/facebook\.com|fb\.com|fbcdn|instagram\.com/.test(u)) || "";
+  } catch { url = ""; }
+  await cacheSet(key, url, Date.now() + 14 * 86400_000);
+  return url || undefined;
+}
+/** CreativeRow/Ad 목록의 캔버스 링크를 실제 랜딩으로 바꿔 준다 */
+async function resolveCanvasLandings<T extends { landingUrl?: string }>(rows: T[]): Promise<T[]> {
+  const targets = [...new Set(rows.map((r) => r.landingUrl).filter((u) => u && /fb\.com\/canvas_doc\//.test(u)))] as string[];
+  if (!targets.length) return rows;
+  const resolved = new Map<string, string | undefined>();
+  await Promise.all(targets.slice(0, 30).map(async (u) => resolved.set(u, await metaCanvasLanding(u))));
+  return rows.map((r) => r.landingUrl && resolved.get(r.landingUrl) ? { ...r, landingUrl: resolved.get(r.landingUrl) } : r);
+}
+
 // ---- 네이버 파워링크 소재 관리 (조회·교체·추가, 확장소재 조회) ----
 export async function naverPowerlinkAds(customerId: string, adgroupId: string) {
   const rows = (await naverRequest("GET", `/ncc/ads?nccAdgroupId=${encodeURIComponent(adgroupId)}`, undefined, customerId)) as any[];
@@ -836,6 +866,7 @@ export async function metaReplaceCreative(accountId: string, adId: string, chang
     if (Array.isArray(link.child_attachments)) link.child_attachments = link.child_attachments.map((c: any) => ({ ...c, picture: undefined, image_hash: hash }));
   }
   if (change.link) {
+    if (/fb\.com\/canvas_doc\//.test(String(link?.link || ""))) throw new Error("이 소재는 인스턴트 경험(캔버스)이라 실제 랜딩이 캔버스 안 버튼에 있어요. Meta 광고 관리자에서 캔버스를 수정해 주세요.");
     if (link) link.link = change.link;
     const cta = (link || video)?.call_to_action;
     if (cta?.value?.link) cta.value.link = change.link;
@@ -1378,10 +1409,10 @@ export const liveAdapter = {
     }
     if (channel === "meta") {
       const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status,effective_status,creative.thumbnail_width(120).thumbnail_height(120){thumbnail_url,image_url,object_story_spec}", limit: "500" });
-      return body.data.map((row: any) => { const osp = row.creative?.object_story_spec || {}; const link = osp.link_data || osp.video_data || {};
+      return resolveCanvasLandings(body.data.map((row: any) => { const osp = row.creative?.object_story_spec || {}; const link = osp.link_data || osp.video_data || {};
         return { id: packed(channel, key.account, row.id), adgroupId, channel, name: row.name, status: asStatus(row.status),
           imageUrl: row.creative?.thumbnail_url || row.creative?.image_url, landingUrl: link.link || link.call_to_action?.value?.link,
-          active: row.effective_status === "ACTIVE" }; });
+          active: row.effective_status === "ACTIVE" }; }));
     }
     if (channel === "google_ads") {
       const rows = await googleSearch(key.account, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad.final_urls, ad_group_ad.status FROM ad_group_ad WHERE ad_group.id = ${key.id} AND ad_group_ad.status != 'REMOVED'`);
@@ -1436,6 +1467,15 @@ export const liveAdapter = {
       return { success: true, changed: 1 };
     }
     if (operation.kind === "create_text_ad") throw new Error("네이버 SA 소재 생성은 트래킹 템플릿 검증 후 지원됩니다.");
+    if (operation.kind === "replace_text_ad") {
+      // B 방식 교체: deleteAdId(선택)를 먼저 지우고 새 TEXT_45 소재 등록 → 네이버 검수 후 노출
+      const group = unpack(operation.adgroupId);
+      const created = await naverReplaceAd(group.account, group.id, {
+        deleteAdId: operation.deleteAdId ? unpack(operation.deleteAdId).id : undefined,
+        headline: operation.headline, description: operation.description, pcUrl: operation.pcUrl, mobileUrl: operation.mobileUrl,
+      });
+      return { success: true, changed: 1, data: created };
+    }
     const key = unpack(operation.id);
     if (operation.channel === "naver_sa") {
       // 네이버 SA 수정은 ?fields=로 바꿀 항목을 지정하고, 본문에 대상 ID를 함께 넣어야 한다

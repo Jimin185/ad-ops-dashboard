@@ -82,6 +82,7 @@ export type ChangeOperation =
   | { kind: "update_budget"; channel: Channel; entityType: EntityType; id: string; dailyBudget: number }
   | { kind: "set_status"; channel: Channel; entityType: EntityType; id: string; status: EntityStatus }
   | { kind: "update_landing"; channel: Channel; entityType: "ad"; id: string; url: string }
+  | { kind: "replace_text_ad"; channel: "naver_sa"; adgroupId: string; deleteAdId?: string; headline: string; description: string; pcUrl: string; mobileUrl?: string }
   | {
       kind: "create_text_ad";
       channel: "naver_sa";

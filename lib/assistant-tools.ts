@@ -248,6 +248,23 @@ export const assistantTools = [
     },
   },
   {
+    name: "replace_powerlink_ad",
+    description: "네이버 파워링크 소재를 교체하거나 추가하는 변경안을 만듭니다 (사용자가 카드에서 확인해야 실행). B 방식: deleteAdId를 주면 그 소재를 먼저 지우고 새 TEXT_45 소재를 등록합니다 — 검수 동안 그 소재 노출이 비어요. 그룹당 소재 5개 제한이라, 추가하려는데 이미 5개면 먼저 list_ads로 소재 목록을 보고 지울 소재의 id를 deleteAdId로 지정하세요. 제한: 제목 15자, 설명 45자 ({키워드:기본값} 치환은 기본값 길이로 셉니다). 행사→상시 문안 일괄 교체처럼 여러 소재면 소재마다 이 도구를 한 번씩 부르세요.",
+    input_schema: {
+      type: "object",
+      properties: {
+        adgroupId: { type: "string", description: "list_adgroups가 돌려준 광고그룹 id" },
+        deleteAdId: { type: "string", description: "지울 기존 소재 id (교체할 때 필수, 빈 자리에 추가면 생략)" },
+        headline: { type: "string", description: "제목 (15자 이내)" },
+        description: { type: "string", description: "설명 (45자 이내)" },
+        pcUrl: { type: "string", description: "PC 랜딩 URL" },
+        mobileUrl: { type: "string", description: "모바일 랜딩 URL (생략하면 PC와 동일)" },
+      },
+      required: ["adgroupId", "headline", "description", "pcUrl"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "create_text_ad",
     description: "네이버 SA 텍스트 광고 생성안을 만듭니다. 기존 트래킹 템플릿 적용 후 사용자 승인이 필요합니다.",
 
@@ -346,6 +363,24 @@ export async function executeAssistantTool(name: string, input: ToolInput, ctx: 
   }
 
   let operation: ChangeOperation;
+  if (name === "replace_powerlink_ad") {
+    const visible = (s: string) => s.replace(/\{[^:}]*:([^}]*)\}/g, "$1").length;
+    const headline = String(input.headline || "").trim(), description = String(input.description || "").trim();
+    if (visible(headline) > 15) return { result: { error: `제목이 15자를 넘어요 (${visible(headline)}자): ${headline}` } };
+    if (visible(description) > 45) return { result: { error: `설명이 45자를 넘어요 (${visible(description)}자): ${description}` } };
+    if (!/^https?:\/\/\S+$/.test(String(input.pcUrl || ""))) return { result: { error: "pcUrl은 http(s)://로 시작해야 해요." } };
+    const replaceOp: Extract<ChangeOperation, { kind: "replace_text_ad" }> = {
+      kind: "replace_text_ad", channel: "naver_sa", adgroupId: String(input.adgroupId),
+      deleteAdId: input.deleteAdId ? String(input.deleteAdId) : undefined,
+      headline, description, pcUrl: String(input.pcUrl), mobileUrl: input.mobileUrl ? String(input.mobileUrl) : undefined,
+    };
+    const group = await adapter.resolveEntity("naver_sa", "adgroup", replaceOp.adgroupId).catch(() => null);
+    const pending = createPendingAction(`파워링크 소재 ${replaceOp.deleteAdId ? "교체" : "추가"} · ${group?.name || replaceOp.adgroupId}`, replaceOp, [
+      { targetId: replaceOp.adgroupId, targetName: group?.name || replaceOp.adgroupId, field: replaceOp.deleteAdId ? "소재 교체(B 방식)" : "소재 추가",
+        before: replaceOp.deleteAdId || null, after: `${headline} — ${description}` },
+    ]);
+    return { result: { status: "pending_user_confirmation", pendingId: pending.id, note: "확인하면 기존 삭제 → 신규 등록 → 네이버 검수 순으로 진행돼요." }, pending };
+  }
   if (name === "create_text_ad") {
     const textOperation: Extract<ChangeOperation, { kind: "create_text_ad" }> = {
       kind: "create_text_ad",
