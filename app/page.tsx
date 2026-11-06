@@ -219,6 +219,25 @@ export default function Dashboard() {
   // 계정별 전환 기준(KPI). 저장소(Supabase)에 전역 저장되고, 조회 경로에 1분 내 반영된다.
   const [kpiPrefsMap, setKpiPrefsMap] = useState<Record<string, string>>({});
   useEffect(() => { fetch("/api/kpi").then((r) => r.json()).then((d) => setKpiPrefsMap(d.prefs || {})).catch(() => {}); }, []);
+  // 브랜드검색 정액 계약 (캠페인별 금액·기간 → 소진 일할 계산)
+  const [brandContracts, setBrandContracts] = useState<Record<string, { amount: number; since: string; until: string }>>({});
+  useEffect(() => { fetch("/api/brandsearch-contracts").then((r) => r.json()).then((d) => setBrandContracts(d.contracts || {})).catch(() => {}); }, []);
+  async function editBrandContract(campaign: Campaign) {
+    const cur = brandContracts[campaign.id];
+    const first = `${currentMonth}-01`;
+    const text = window.prompt(`'${campaign.name}' 정액 계약을 「금액 시작일 종료일」로 입력하세요.\n예: 1400000 ${first} ${currentMonth}-30\n비우고 확인하면 계약을 지워요.`,
+      cur ? `${cur.amount} ${cur.since} ${cur.until}` : `1400000 ${first} `);
+    if (text === null) return;
+    const m = text.trim().match(/^([\d,]+)\s+(\d{4}-\d{2}-\d{2})\s+(\d{4}-\d{2}-\d{2})$/);
+    if (text.trim() && !m) return window.alert("형식을 읽지 못했어요. 예: 1400000 2026-11-01 2026-11-30");
+    const body = m ? { campaignId: campaign.id, amount: Number(m[1].replace(/,/g, "")), since: m[2], until: m[3] } : { campaignId: campaign.id, remove: true };
+    const response = await fetch("/api/brandsearch-contracts", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await response.json();
+    if (!response.ok) return window.alert(data.error || "계약을 저장하지 못했습니다.");
+    setBrandContracts(data.contracts || {});
+    setNotice("계약을 저장했어요. 소진 일할 계산은 1분 안에 반영돼요 — 잠시 후 새로고침해 주세요.");
+    setTimeout(() => setNotice(""), 6000);
+  }
   async function saveKpi(accountKey: string, metric: string) {
     setKpiPrefsMap((cur) => ({ ...cur, [accountKey]: metric }));
     const response = await fetch("/api/kpi", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountKey, metric }) });
@@ -987,7 +1006,9 @@ export default function Dashboard() {
                     <td className="check-col" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selection.has(campaign.id)} onChange={(e) => toggleMany([{ id: campaign.id, channel: campaign.channel, entityType: "campaign", name: campaign.name }], e.target.checked)} /></td>
                     <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
                     <td><b>{selectedCampaign?.id === campaign.id ? "▾ " : "▸ "}{campaign.name}</b>{excludedIds.has(campaign.id) && <span className="excluded-tag" title="예산·리포트 합계에서 빠져 있어요">예산 제외 <button className="link-button" onClick={(e) => { e.stopPropagation(); void includeCampaign(campaign.id); }}>해제</button></span>}<small className="id">{campaign.accountName}{campaign.product ? ` · ${campaign.product}` : ""}</small></td>
-                    <td onClick={(e) => e.stopPropagation()}><BudgetButton value={campaign.dailyBudget} lifetime={campaign.lifetimeBudget} remaining={campaign.budgetRemaining} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} /></td>
+                    <td onClick={(e) => e.stopPropagation()}>{campaign.channel === "naver_sa" && (campaign.product || "").includes("브랜드")
+                      ? <button className="link-button" title="정액 계약을 등록하면 소진이 계약금 일할로 계산돼요" onClick={() => void editBrandContract(campaign)}>{brandContracts[campaign.id] ? `정액 ${won.format(brandContracts[campaign.id].amount)}` : "정액 계약 입력"}</button>
+                      : <BudgetButton value={campaign.dailyBudget} lifetime={campaign.lifetimeBudget} remaining={campaign.budgetRemaining} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} />}</td>
                     <td>{won.format(campaign.spend)}</td><td>{campaign.roas}%</td>
                     <td onClick={(e) => e.stopPropagation()}><span className="status-cell"><StatusButton status={campaign.status} label={campaign.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: next }])} /><ScheduleBadge target={{ channel: campaign.channel, entityType: "campaign", id: campaign.id, name: campaign.name }} schedules={schedules} onOpen={(t) => setScheduleTargets([t])} /></span></td>
                   </tr>,

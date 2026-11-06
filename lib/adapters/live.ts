@@ -110,10 +110,14 @@ async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
     const { since, until } = monthRange();
     const stats = new Map<string, any>();
     try { for (const row of await naverStats(account.id, rows.map((r) => r.nccCampaignId), since, until, false)) stats.set(row.id, row); } catch { /* 통계 없음 */ }
+    const contracts = await brandContracts();
     return rows.map((row) => {
       const s = stats.get(row.nccCampaignId) || {};
-      const spend = num(s.salesAmt);
-      return { id: packed("naver_sa", account.id, row.nccCampaignId), channel: "naver_sa" as const, name: row.name,
+      const id = packed("naver_sa", account.id, row.nccCampaignId);
+      // 브랜드검색 정액 계약이 등록돼 있으면 일할 계산 금액을 소진으로 쓴다 (정액제는 리포트 소진이 0으로 잡힘)
+      const contract = contracts[id];
+      const spend = contract ? brandProratedSpend(contract, since, until) : num(s.salesAmt);
+      return { id, channel: "naver_sa" as const, name: row.name,
         dailyBudget: num(row.dailyBudget), status: (row.userLock ? "off" : "on") as EntityStatus, spend, conversions: Math.round(num(s.ccnt)),
         roas: spend ? Math.round(num(s.convAmt) / spend * 100) : 0, accountId: account.id, accountName: account.name,
         active: !row.userLock && row.status === "ELIGIBLE", rawStatus: row.status, product: productOf(row.campaignTp) };
@@ -491,6 +495,27 @@ async function kpiPrefs(): Promise<Record<string, string>> {
   return map;
 }
 export async function kpiMetricOf(channel: Channel, accountId: string) { return (await kpiPrefs())[`${channel}:${accountId}`]; }
+
+// ---- 브랜드검색 정액 계약 일할 계산: adops_cache 의 brandsearch_contracts (캠페인 packed id → {amount, since, until}) ----
+export type BrandContract = { amount: number; since: string; until: string };
+let brandMemo: { at: number; map: Record<string, BrandContract> } | null = null;
+async function brandContracts(): Promise<Record<string, BrandContract>> {
+  if (brandMemo && Date.now() - brandMemo.at < 60_000) return brandMemo.map;
+  let map: Record<string, BrandContract> = {};
+  try { if (storageAvailable()) map = (await kvGet<Record<string, BrandContract>>("brandsearch_contracts")) || {}; } catch { /* 기본값 */ }
+  brandMemo = { at: Date.now(), map };
+  return map;
+}
+/** 계약금액을 계약일수로 나눠, 이번 달 안에서 오늘까지 경과한 계약일만큼 소진으로 친다 */
+function brandProratedSpend(contract: BrandContract, monthSince: string, today: string) {
+  const day = (s: string) => Math.floor(new Date(`${s}T00:00:00+09:00`).getTime() / 86400_000);
+  const contractDays = day(contract.until) - day(contract.since) + 1;
+  if (!(contract.amount > 0) || contractDays <= 0) return 0;
+  const from = Math.max(day(contract.since), day(monthSince));
+  const to = Math.min(day(contract.until), day(today));
+  const elapsed = Math.max(0, to - from + 1);
+  return Math.round(contract.amount / contractDays * elapsed);
+}
 const metaKpiTypes = async (accountId: string) => META_KPI_ACTIONS[(await kpiPrefs())[`meta:${accountId}`] || "purchase"] || META_KPI_ACTIONS.purchase;
 const gfaKpiType = async (accountId: string) => (await kpiPrefs())[`naver_gfa:${accountId}`] || "PURCHASE";
 const gfaConvHit = (row: any, wanted: string) => wanted === "ALL" || row.convType === wanted;
