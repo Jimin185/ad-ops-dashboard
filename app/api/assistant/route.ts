@@ -59,7 +59,7 @@ async function handle(request: Request) {
     const textFiles = (body.attachments || []).filter((f) => f.kind === "text");
     const freeHistory = textFiles.length && history.length ? [...history.slice(0, -1), { ...history[history.length - 1], content: `${textFiles.map((f) => `[첨부 파일: ${f.name}]\n${String(f.data).slice(0, 40_000)}`).join("\n\n")}\n\n${history[history.length - 1].content}` }] : history;
     if (!cont && freeLlmConfig() && !(body.attachments || []).some((f) => f.kind !== "text") && body.mode !== "claude") {
-      const free = await runFreeAssistant(freeHistory, screenLine, ctx, request.signal, started + 40_000).catch((e) => ({ kind: "escalate" as const, reason: String(e).slice(0, 120) }));
+      const free = await runFreeAssistant(freeHistory, screenLine, ctx, request.signal, started + (textFiles.length ? 52_000 : 40_000)).catch((e) => ({ kind: "escalate" as const, reason: String(e).slice(0, 120) }));
       if (request.signal.aborted) return new Response(null, { status: 499 });
       if (free.kind === "answer") return Response.json({ message: free.text, pendingActions: [], mixDrafts: free.mixDrafts, usage: free.usage, model: free.label });
       escalated = free.reason;

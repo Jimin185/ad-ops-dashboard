@@ -41,7 +41,11 @@ const SYSTEM = `당신은 광고대행사 대시보드의 어시스턴트입니�
 - 남은 일수는 [현재 화면] 줄의 오늘 날짜를 포함해 이번 달 말일까지로 계산하세요.\n- '지금 페이스' = 어제까지 끝난 날의 일평균입니다. 이번 달 누적에는 진행 중인 오늘 사용분이 섞여 있으니 오늘을 하루로 세서 나누지 마세요. 가능하면 get_report 로 일자별 광고비를 받아 어제까지만 합산하고, 안 되면 (누적 ÷ (경과한 날 수 - 1)) 로 근사하고 그렇게 했다고 밝히세요.
 - 당신은 광고를 직접 바꿀 수 없습니다. 사용자가 광고 예산·상태·세팅을 '바꿔줘·꺼줘·만들어줘'처럼 실행 요청할 때만 escalate_to_claude 를 호출하세요(믹스 초안은 propose_mix 로 직접).
 - 금액은 KRW, ROAS = 매출÷광고비×100(%). 답은 간결한 한국어, 비교는 마크다운 표로.
-- 사용자가 믹스·월예산 표(첨부 CSV/엑셀 등)를 주며 반영해 달라고 하면 propose_mix 로 해당 월 믹스 초안을 만드세요. 표의 각 행을 lines 로 넣고(name=믹스구분·캠페인, channel, budget=월예산 원 단위, keywords=[캠페인명 키워드]), 메모는 note 에 넣으세요. channels 는 매체별 합계입니다. 초안은 사용자가 카드에서 저장해야 반영됩니다.
+- 사용자가 믹스·월예산 표(첨부 CSV/엑셀 등)를 주며 반영해 달라고 하면 다른 도구 조회 없이 바로 propose_mix 를 한 번 호출해 해당 월 믹스 초안을 만드세요.
+  · 표의 매체가 naver_sa / naver_gfa / meta / google_ads 인 행은 하나도 빠짐없이 lines 에 넣으세요(행 순서 그대로). 그 외 매체(버티컬·카카오·NOSP 등)는 lines 에 넣지 말고 notes 에 '미연동 매체: 이름 금액' 으로 적으세요.
+  · name = '믹스구분 · 캠페인 키워드'(80자 이내), channel = 표의 매체, budget = 표의 월예산(마크업 포함) 숫자를 쉼표만 빼고 그대로 — 반올림·재계산 금지, keywords = 캠페인 키워드 칸을 쉼표로 나눈 목록(그대로), excludes = 제외 키워드 칸(있으면), note = 메모 요약 60자 이내.
+  · channels 에는 매체별 합계를 넣되 서버가 lines 로 다시 계산합니다.
+  · 호출 결과의 lineCount·channelTotals·totalBudget 을 표와 대조해 표로 보여주고, 다르면 어디가 다른지 말하세요. 초안은 사용자가 카드에서 저장해야 반영됩니다.
 - 캠페인 일예산 질문에는 get_mixes 의 라인 월예산(마크업 포함)과 이번 달 집행액을 써서 계산하세요.
 - 마지막 [현재 화면] 줄의 광고주 기준으로 답하세요.`;
 const NO_ESCALATE = `\n- 지금은 변경을 실행할 수 있는 모델이 없습니다. 변경 요청이면 바꿀 값과 이유를 계산해 알려주고, 대시보드 캠페인 표의 일예산·ON/OFF 버튼으로 직접 적용하라고 안내하세요.`;
@@ -56,21 +60,24 @@ export async function runFreeAssistant(history: Array<{ role: "user" | "assistan
   const messages: Msg[] = [{ role: "system", content: SYSTEM + (allowEscalate ? "" : NO_ESCALATE) }, ...history.map((m) => ({ role: m.role, content: m.content })), { role: "user", content: screenLine }];
   const usage = { input: 0, output: 0, cached: 0 };
   for (let step = 0; step < 8; step++) {
-    if (Date.now() > deadlineMs) return { kind: "escalate", reason: "무료 모델 시간 초과" };
+    // 믹스 초안을 이미 만들었으면 시간이 모자라도 초안은 돌려준다(요약 답변만 생략)
+    const draftDone = () => ({ kind: "answer" as const, text: `믹스 초안 ${mixDrafts.at(-1)?.lines?.length ?? 0}개 라인을 만들었어요. 카드에서 금액을 확인하고 저장해 주세요.`, usage, label: cfg.label, mixDrafts });
+    if (Date.now() > deadlineMs) return mixDrafts.length ? draftDone() : { kind: "escalate", reason: "무료 모델 시간 초과" };
     // 무료 등급은 혼잡(503)·한도(429)가 잦다 → 예비 모델로 한 번씩 더 시도
     let res: Response | null = null, text = "";
     for (const model of [cfg.model, ...cfg.fallbacks]) {
       res = await fetch(`${cfg.base}/chat/completions`, {
-        method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(5_000, Math.min(20_000, deadlineMs - Date.now())))]),
+        method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(5_000, Math.min(45_000, deadlineMs - Date.now())))]),
         headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages, tools: allowEscalate ? TOOLS : TOOLS.filter((t) => t.function.name !== "escalate_to_claude"), tool_choice: "auto", temperature: 0.2 }),
+        body: JSON.stringify({ model, messages, tools: allowEscalate ? TOOLS : TOOLS.filter((t) => t.function.name !== "escalate_to_claude"), tool_choice: "auto", temperature: 0.1, max_tokens: 16000 }),
       }).catch(() => null);
       text = res ? await res.text() : "";
       if (res && ![429, 500, 503].includes(res.status)) break;
       if (Date.now() > deadlineMs) break;
     }
-    if (!res) return { kind: "escalate", reason: "무료 모델 응답 없음" };
+    if (!res) return mixDrafts.length ? draftDone() : { kind: "escalate", reason: "무료 모델 응답 없음" };
     let body: any; try { body = JSON.parse(text); } catch { body = {}; }
+    if (!res.ok && mixDrafts.length) return draftDone();
     if (!res.ok) return { kind: "escalate", reason: `무료 모델 오류(${res.status}): ${String(body?.error?.message || body?.[0]?.error?.message || text).slice(0, 160)}` };
     usage.input += Number(body.usage?.prompt_tokens) || 0; usage.output += Number(body.usage?.completion_tokens) || 0;
     const msg = body.choices?.[0]?.message || {};
@@ -90,5 +97,5 @@ export async function runFreeAssistant(history: Array<{ role: "user" | "assistan
       messages.push({ role: "tool", tool_call_id: call.id, content: content.slice(0, 20_000) });
     }
   }
-  return { kind: "escalate", reason: "단계가 많아 Claude로 넘김" };
+  return mixDrafts.length ? { kind: "answer", text: "믹스 초안을 만들었어요. 카드에서 확인하고 저장해 주세요.", usage, label: cfg.label, mixDrafts } : { kind: "escalate", reason: "단계가 많아 Claude로 넘김" };
 }
