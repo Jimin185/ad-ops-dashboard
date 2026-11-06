@@ -8,6 +8,7 @@ import { MixView } from "./mix-view";
 import { MixMappingView } from "./mix-mapping";
 import { CreativeView } from "./creative-view";
 import { SaView } from "./sa-view";
+import { GoogleSaView } from "./google-sa-view";
 import { MarketView } from "./market-view";
 import { InsightsView } from "./insights-view";
 import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from "./filter-bar";
@@ -218,7 +219,7 @@ export default function Dashboard() {
   const [saForm, setSaForm] = useState({ name: "", customerId: "", apiKey: "", secretKey: "" });
   const [saStatus, setSaStatus] = useState<{ state: "idle" | "saving" | "error" | "done"; message: string }>({ state: "idle", message: "" });
   const [dashTab, setDashTab] = useState<DashTab>("report");
-  const [detailTab, setDetailTab] = useState<"sa" | "creative">("creative");
+  const [detailTab, setDetailTab] = useState<"sa" | "google" | "creative">("creative");
   const [storageMode, setStorageMode] = useState<"loading" | "supabase" | "local">("loading");
   const [storageError, setStorageError] = useState("");
   const [mixes, setMixes] = useState<MediaMix[]>([]);
@@ -514,6 +515,10 @@ export default function Dashboard() {
   }, [view, selectedAdvertiserId, saIds.join(",")]);
   const hasGfa = (selectedAdvertiser?.accountKeys || []).some((k) => k.startsWith("naver_gfa:"));
   const hasSa = saIds.length > 0;
+  const googleIds = useMemo(() => (selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("google_ads:")).map((k) => {
+    const id = k.slice("google_ads:".length);
+    return { id, name: accounts.find((a) => a.channel === "google_ads" && a.id === id)?.name || `Google Ads ${id}` };
+  }), [selectedAdvertiser, accounts]);
   const saDaily = (id: string) => advertiserCampaigns.filter((c) => c.channel === "naver_sa" && c.accountId === id).reduce((s, c) => s + c.spend, 0) / Math.max(1, Number(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", day: "2-digit" }).format(new Date())));
 
   /** 다른 화면에서 캠페인을 누르면 매체별 데이터의 그 캠페인 상세로 이동 */
@@ -911,10 +916,12 @@ export default function Dashboard() {
       {dashTab === "mix" && <button className="link-button back-link" onClick={() => setDashTab("report")}>← 대시보드로</button>}
       {dashTab === "detail" && <nav className="segmented" aria-label="세부 성과분석">
         {hasSa && <button className={detailTab === "sa" ? "active" : ""} onClick={() => setDetailTab("sa")}>SA 분석</button>}
-        <button className={detailTab === "creative" || !hasSa ? "active" : ""} onClick={() => setDetailTab("creative")}>DA 소재성과</button>
+        {googleIds.length > 0 && <button className={detailTab === "google" ? "active" : ""} onClick={() => setDetailTab("google")}>구글 검색</button>}
+        <button className={detailTab === "creative" || (detailTab === "sa" && !hasSa) ? "active" : ""} onClick={() => setDetailTab("creative")}>DA 소재성과</button>
       </nav>}
       {dashTab === "detail" && detailTab === "sa" && hasSa && <SaView onOpenCampaign={goToCampaign} apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
-      {dashTab === "detail" && (detailTab === "creative" || !hasSa) && <CreativeView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
+      {dashTab === "detail" && detailTab === "google" && googleIds.length > 0 && <GoogleSaView onOpenCampaign={goToCampaign} apiFetch={apiFetch} accountIds={googleIds} />}
+      {dashTab === "detail" && (detailTab === "creative" || (detailTab === "sa" && !hasSa) || (detailTab === "google" && !googleIds.length)) && <CreativeView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
       {dashTab === "ops" && <>
         <section className="metrics">
           <article><span>이번 달 광고비</span><strong>{won.format(totals.spend)}</strong><small>연결 채널 통합</small></article>

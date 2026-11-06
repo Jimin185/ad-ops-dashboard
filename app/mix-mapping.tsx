@@ -232,6 +232,8 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         if (flat) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "브랜드검색은 정액제 — 일예산 없음")); continue; }
         const gvideo = c.channel === "google_ads" && (c.product || "").includes("동영상");
         if (gvideo) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "구글 영상 캠페인은 API 수정 불가 — 구글애즈에서 수동 변경 (권장값 참고)")); continue; }
+        // 캠페인 총예산(CBO lifetime)을 쓰면 광고세트 예산 설정이 매체에서 거절된다 (Meta subcode 1885621)
+        if (!c.dailyBudget && c.lifetimeBudget) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "캠페인 총예산(CBO) 사용 — 일예산 없음, 매체 화면에서 총예산으로 관리 (권장 일액 참고)")); continue; }
         const groups = groupsByCampaign.get(c.id);
         if (!c.dailyBudget && c.channel !== "google_ads") {
           // 캠페인 예산 없음 → 광고그룹(광고세트) 예산으로 배분: 기존 그룹예산 비중대로, 없으면 균등

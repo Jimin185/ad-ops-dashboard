@@ -1049,6 +1049,38 @@ export const PRODUCT_LABEL: Record<string, string> = {
 };
 function productOf(value?: string) { return value ? (PRODUCT_LABEL[value] || value) : undefined; }
 
+/** 세부 성과분석 · 구글 검색: 유형별 합계 + 검색 캠페인의 광고그룹/키워드/검색어/광고문안 성과 (GAQL 직조회, 캐시 없음) */
+export async function googleSearchInsights(accountId: string, since: string, until: string) {
+  const SEL = "metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value";
+  const date = `segments.date BETWEEN '${since}' AND '${until}'`;
+  const m = (r: any) => ({ imp: num(r.metrics?.impressions), clk: num(r.metrics?.clicks), cost: num(r.metrics?.costMicros) / 1e6, conv: num(r.metrics?.conversions), revenue: num(r.metrics?.conversionsValue) });
+  const [typeRows, adgroupRows, keywordRows, termRows, adRows] = await Promise.all([
+    googleSearch(accountId, `SELECT campaign.advertising_channel_type, ${SEL} FROM campaign WHERE ${date}`),
+    googleSearch(accountId, `SELECT campaign.id, campaign.name, ad_group.id, ad_group.name, ad_group.status, ${SEL} FROM ad_group WHERE ${date} AND campaign.advertising_channel_type = 'SEARCH' AND metrics.impressions > 0 ORDER BY metrics.cost_micros DESC LIMIT 500`),
+    googleSearch(accountId, `SELECT ad_group.id, ad_group.name, ad_group_criterion.criterion_id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.status, ${SEL} FROM keyword_view WHERE ${date} AND campaign.advertising_channel_type = 'SEARCH' AND metrics.impressions > 0 ORDER BY metrics.cost_micros DESC LIMIT 1000`),
+    googleSearch(accountId, `SELECT ad_group.id, ad_group.name, search_term_view.search_term, ${SEL} FROM search_term_view WHERE ${date} AND metrics.impressions > 0 ORDER BY metrics.cost_micros DESC LIMIT 500`),
+    googleSearch(accountId, `SELECT ad_group.id, ad_group.name, ad_group_ad.ad.id, ad_group_ad.status, ad_group_ad.ad.final_urls, ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad.responsive_search_ad.descriptions, ${SEL} FROM ad_group_ad WHERE ${date} AND campaign.advertising_channel_type = 'SEARCH' AND metrics.impressions > 0 ORDER BY metrics.cost_micros DESC LIMIT 500`),
+  ]);
+  const typeTotals = new Map<string, any>();
+  for (const r of typeRows) {
+    const type = r.campaign?.advertisingChannelType || "?";
+    const acc = typeTotals.get(type) || { type, label: productOf(type) || type, imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0 };
+    const v = m(r); acc.imp += v.imp; acc.clk += v.clk; acc.cost += v.cost; acc.conv += v.conv; acc.revenue += v.revenue;
+    typeTotals.set(type, acc);
+  }
+  return {
+    status: "ready", since, until,
+    typeTotals: [...typeTotals.values()].sort((a, b) => b.cost - a.cost),
+    adgroups: adgroupRows.map((r: any) => ({ adgroupId: String(r.adGroup.id), adgroup: r.adGroup.name, campaignId: String(r.campaign.id), campaign: r.campaign.name, active: r.adGroup.status === "ENABLED", ...m(r) })),
+    keywords: keywordRows.map((r: any) => ({ adgroupId: String(r.adGroup.id), adgroup: r.adGroup.name, id: String(r.adGroupCriterion?.criterionId || ""), keyword: r.adGroupCriterion?.keyword?.text || "", matchType: r.adGroupCriterion?.keyword?.matchType || "", active: r.adGroupCriterion?.status === "ENABLED", ...m(r) })),
+    searchTerms: termRows.map((r: any) => ({ adgroupId: String(r.adGroup.id), adgroup: r.adGroup.name, term: r.searchTermView?.searchTerm || "", ...m(r) })),
+    ads: adRows.map((r: any) => ({ adgroupId: String(r.adGroup.id), adgroup: r.adGroup.name, id: String(r.adGroupAd.ad.id), active: r.adGroupAd.status === "ENABLED",
+      headline: (r.adGroupAd.ad.responsiveSearchAd?.headlines || []).slice(0, 3).map((h: any) => h.text).filter(Boolean).join(" · "),
+      description: (r.adGroupAd.ad.responsiveSearchAd?.descriptions || []).slice(0, 1).map((d: any) => d.text).filter(Boolean).join(" "),
+      landingUrl: r.adGroupAd.ad.finalUrls?.[0], ...m(r) })),
+  };
+}
+
 /** 네이버 SA 비즈머니 잔액 (10분 캐시). GFA는 잔액 조회 API가 없다. */
 export async function getBizmoney(customerIds: string[]) {
   return Promise.all(customerIds.map(async (id) => {
@@ -1251,12 +1283,19 @@ export const liveAdapter = {
         if (operation.entityType !== "campaign") throw new Error("Google Ads는 캠페인 예산만 변경할 수 있어요.");
         // 구글 예산은 campaign_budget 리소스라 여러 캠페인이 공유할 수 있다.
         // 전용 예산일 때만 바꾸고, 공유 예산은 다른 캠페인까지 같이 바뀌므로 거절한다.
-        const rows = await googleSearch(key.account, `SELECT campaign.id, campaign.advertising_channel_type, campaign_budget.resource_name, campaign_budget.explicitly_shared, campaign_budget.reference_count FROM campaign WHERE campaign.id = ${key.id}`);
-        if (rows?.[0]?.campaign?.advertisingChannelType === "VIDEO") throw new Error("구글 영상(유튜브) 캠페인은 구글이 API 수정을 막아 두었어요. 구글애즈 화면에서 직접 바꿔 주세요.");
+        const rows = await googleSearch(key.account, `SELECT campaign.id, campaign.advertising_channel_type, campaign.advertising_channel_sub_type, campaign_budget.resource_name, campaign_budget.explicitly_shared, campaign_budget.reference_count FROM campaign WHERE campaign.id = ${key.id}`);
+        const chType = [rows?.[0]?.campaign?.advertisingChannelType, rows?.[0]?.campaign?.advertisingChannelSubType].filter(Boolean).join("/");
+        if (/VIDEO|SMART/.test(chType)) throw new Error(`구글 ${chType.startsWith("VIDEO") ? "영상(유튜브)" : "스마트"} 캠페인은 구글이 API 수정을 막아 두었어요. 구글애즈 화면에서 직접 바꿔 주세요.`);
         const budget = rows?.[0]?.campaignBudget;
         if (!budget?.resourceName) throw new Error("캠페인 예산을 찾지 못했어요.");
         if (budget.explicitlyShared) throw new Error(`공유 예산이라 바꿀 수 없어요 (캠페인 ${Number(budget.referenceCount) || "여러 "}개가 함께 사용). 구글애즈에서 전용 예산으로 바꾸거나 공유 예산을 직접 수정해 주세요.`);
-        await googleMutateWithEuRetry(key.account, () => googleRequest(`customers/${key.account}/campaignBudgets:mutate`, { operations: [{ update: { resourceName: budget.resourceName, amountMicros: String(Math.round(operation.dailyBudget) * 1_000_000) }, updateMask: "amountMicros" }] }));
+        try {
+          await googleMutateWithEuRetry(key.account, () => googleRequest(`customers/${key.account}/campaignBudgets:mutate`, { operations: [{ update: { resourceName: budget.resourceName, amountMicros: String(Math.round(operation.dailyBudget) * 1_000_000) }, updateMask: "amountMicros" }] }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/Mutates are not allowed/i.test(message)) throw new Error(`구글이 이 캠페인의 API 수정을 막았어요 (유형: ${chType || "알 수 없음"}). 구글애즈 화면에서 직접 바꿔 주세요.`);
+          throw error;
+        }
         return { success: true, changed: 1 };
       }
       const resource = operation.entityType === "campaign" ? "campaigns" : operation.entityType === "adgroup" ? "adGroups" : "adGroupAds";
