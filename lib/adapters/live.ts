@@ -784,6 +784,37 @@ async function googleCreatives(accountId: string, since: string, until: string):
   });
 }
 
+// ---- 네이버 파워링크 소재 관리 (조회·교체·추가, 확장소재 조회) ----
+export async function naverPowerlinkAds(customerId: string, adgroupId: string) {
+  const rows = (await naverRequest("GET", `/ncc/ads?nccAdgroupId=${encodeURIComponent(adgroupId)}`, undefined, customerId)) as any[];
+  return rows.filter((row) => row.type === "TEXT_45" || row.ad?.headline).map((row) => ({
+    id: String(row.nccAdId), type: String(row.type || ""), headline: row.ad?.headline || "", description: row.ad?.description || "",
+    pcUrl: row.ad?.pc?.final || "", mobileUrl: row.ad?.mobile?.final || "",
+    inspect: String(row.inspectStatus || ""), on: !row.userLock, status: String(row.status || ""),
+  }));
+}
+export async function naverAdExtensions(customerId: string, ownerId: string) {
+  const rows = (await naverRequest("GET", `/ncc/ad-extensions?ownerId=${encodeURIComponent(ownerId)}`, undefined, customerId).catch(() => [])) as any[];
+  return rows.map((row) => ({
+    id: String(row.nccAdExtensionId), type: String(row.type || ""), on: !row.userLock,
+    inspect: String(row.inspectStatus || ""), content: JSON.stringify(row.adExtension || {}).slice(0, 300),
+  }));
+}
+/** B 방식 교체: (지정 시) 기존 소재를 먼저 지우고 새 TEXT_45 소재를 등록한다. 그룹당 5개 제한 때문. */
+export async function naverReplaceAd(customerId: string, adgroupId: string, input: { deleteAdId?: string; headline: string; description: string; pcUrl: string; mobileUrl?: string }) {
+  if (input.deleteAdId) await naverRequest("DELETE", `/ncc/ads/${encodeURIComponent(input.deleteAdId)}`, undefined, customerId);
+  try {
+    const created = await naverRequest("POST", "/ncc/ads", {
+      nccAdgroupId: adgroupId, type: "TEXT_45",
+      ad: { headline: input.headline, description: input.description, pc: { final: input.pcUrl }, mobile: { final: input.mobileUrl || input.pcUrl } },
+    }, customerId);
+    return { id: String(created?.nccAdId || ""), inspect: String(created?.inspectStatus || "") };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${input.deleteAdId ? "기존 소재는 지워졌는데 " : ""}새 소재 등록이 거절됐어요: ${message}`);
+  }
+}
+
 /**
  * Meta 소재 교체 (이미지·랜딩). 크리에이티브는 수정 불가 객체라, 기존 스펙을 복사해
  * 이미지 해시/링크만 바꾼 새 크리에이티브를 만들어 광고에 연결한다 (성과 지표는 광고 기준이라 유지됨).

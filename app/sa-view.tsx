@@ -68,6 +68,67 @@ export function SaView({ accountIds, apiFetch, onOpenCampaign }: { onOpenCampaig
   const [reloadKey, setReloadKey] = useState(0);
   const range = useMemo(() => rangeOf(period), [period]);
 
+  // ---- 파워링크 소재 관리: 그룹을 고르면 실제 소재(랜딩 포함)·확장소재를 받아와 수정/추가 ----
+  type LiveAd = { id: string; headline: string; description: string; pcUrl: string; mobileUrl: string; inspect: string; on: boolean };
+  type LiveExt = { id: string; type: string; on: boolean; inspect: string; content: string };
+  const [liveAds, setLiveAds] = useState<{ adgroupId: string; ads: LiveAd[]; extensions: LiveExt[] } | null>(null);
+  const [adBusy, setAdBusy] = useState("");
+  const EXT_LABEL: Record<string, string> = { POWER_LINK_IMAGE: "파워링크 이미지", SUB_LINKS: "서브링크", IMAGE_SUB_LINKS: "이미지형 서브링크", PRICE_LINKS: "가격링크", PROMOTION: "프로모션", HEADLINE: "추가 제목", DESCRIPTION: "추가 설명", DESCRIPTION_EXTRA: "추가 설명+", CALCULATION: "계산", PHONE: "전화번호", LOCATION: "위치", NAVER_BLOG_REVIEW: "블로그 리뷰", BOOKING: "예약", TALK: "톡톡", WEBSITE_INFO: "웹사이트 정보", TALKTALK_CONSULTATION: "톡톡 상담" };
+  async function loadLiveAds(adgroupId: string) {
+    setAdBusy("소재 불러오는 중…");
+    try {
+      const res = await apiFetch(`/api/sa/ads?customerId=${encodeURIComponent(account)}&adgroupId=${encodeURIComponent(adgroupId)}`);
+      const body = await res.json();
+      if (!res.ok) { window.alert(body.error || "소재를 불러오지 못했어요."); return null; }
+      const next = { adgroupId, ads: body.ads as LiveAd[], extensions: body.extensions as LiveExt[] };
+      setLiveAds(next);
+      return next;
+    } finally { setAdBusy(""); }
+  }
+  function promptAdFields(base?: Partial<LiveAd>) {
+    const headline = window.prompt("제목 (15자, {키워드:기본값} 치환 가능)", base?.headline || "");
+    if (headline === null || !headline.trim()) return null;
+    const description = window.prompt("설명 (45자)", base?.description || "");
+    if (description === null || !description.trim()) return null;
+    const pcUrl = window.prompt("PC 랜딩 URL", base?.pcUrl || "https://");
+    if (pcUrl === null || !/^https?:\/\//.test(pcUrl)) { if (pcUrl !== null) window.alert("PC 랜딩 URL을 확인해 주세요."); return null; }
+    const mobileUrl = window.prompt("모바일 랜딩 URL (비우면 PC와 동일)", base?.mobileUrl || pcUrl) || pcUrl;
+    return { headline: headline.trim(), description: description.trim(), pcUrl: pcUrl.trim(), mobileUrl: mobileUrl.trim() };
+  }
+  async function submitAd(adgroupId: string, fields: { headline: string; description: string; pcUrl: string; mobileUrl: string }, deleteAdId?: string) {
+    setAdBusy("소재 등록 중…");
+    try {
+      const res = await apiFetch("/api/sa/ads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customerId: account, adgroupId, deleteAdId, ...fields }) });
+      const body = await res.json();
+      if (!res.ok) { window.alert(body.error || "등록하지 못했어요."); return; }
+      window.alert("새 소재를 등록했어요. 네이버 검수가 끝나면 노출됩니다.");
+      await loadLiveAds(adgroupId);
+    } finally { setAdBusy(""); }
+  }
+  async function editAd(adgroupId: string, ad: LiveAd) {
+    const fields = promptAdFields(ad);
+    if (!fields) return;
+    if (!window.confirm(`B 방식으로 교체합니다:\n기존 소재를 먼저 지우고 새 소재를 등록해요 (검수 동안 이 소재 노출 공백).\n\n'${ad.headline}' → '${fields.headline}'\n진행할까요?`)) return;
+    await submitAd(adgroupId, fields, ad.id);
+  }
+  async function addAd(adgroupId: string) {
+    const current = liveAds?.adgroupId === adgroupId ? liveAds : await loadLiveAds(adgroupId);
+    if (!current) return;
+    let deleteAdId: string | undefined;
+    if (current.ads.length >= 5) {
+      const list = current.ads.map((a, i) => `${i + 1}. ${a.headline} — ${a.description.slice(0, 24)}${a.on ? "" : " (OFF)"}`).join("\n");
+      const pick = window.prompt(`소재가 5개라 하나를 지워야 등록할 수 있어요.\n지울 소재 번호를 고르세요:\n\n${list}`, "");
+      if (pick === null) return;
+      const idx = Number(pick.trim()) - 1;
+      if (!(idx >= 0 && idx < current.ads.length)) return window.alert("번호를 다시 확인해 주세요.");
+      deleteAdId = current.ads[idx].id;
+      if (!window.confirm(`'${current.ads[idx].headline}' 소재를 지우고 새 소재를 등록합니다. 진행할까요?`)) return;
+    }
+    const fields = promptAdFields();
+    if (!fields) return;
+    await submitAd(adgroupId, fields, deleteAdId);
+  }
+
   useEffect(() => {
     if (!account) return;
     let cancelled = false;
@@ -124,8 +185,27 @@ export function SaView({ accountIds, apiFetch, onOpenCampaign }: { onOpenCampaig
           {(tab === "keywords" || tab === "ads" || tab === "terms") && <select className="mini-select group-select" value={group} onChange={(e) => setGroup(e.target.value)}><option value="all">전체 광고그룹</option>{groups.map((g) => <option key={g.adgroupId} value={g.adgroupId}>{g.adgroup} ({won.format(g.cost)})</option>)}</select>}
           <input className="account-search" type="search" placeholder={tab === "terms" ? "검색어 검색" : tab === "products" ? "제품명 검색" : "이름 검색 (꺼진 항목 포함)"} value={query} onChange={(e) => setQuery(e.target.value)} />
           {tab !== "terms" && tab !== "products" && <label className="toggle"><input type="checkbox" checked={!hideInactive} onChange={(e) => setHideInactive(!e.target.checked)} /> 꺼진 항목 포함</label>}
+          {tab === "ads" && <button className="secondary" disabled={group === "all" || !!adBusy} title={group === "all" ? "광고그룹을 먼저 선택하세요" : "그룹당 5개 제한 — 꽉 찼으면 지울 소재를 고르게 돼요"} onClick={() => void addAd(group)}>➕ 새 소재</button>}
+          {tab === "ads" && group !== "all" && <button className="secondary" disabled={!!adBusy} onClick={() => void loadLiveAds(group)}>확장소재 보기</button>}
           {sortSelect}
         </div>
+        {tab === "ads" && adBusy && <p className="viz-sub notice-line"><span className="spinner inline" /> {adBusy}</p>}
+        {tab === "ads" && liveAds && liveAds.adgroupId === group && <article className="viz-card">
+          <div className="viz-head"><span className="viz-title">이 광고그룹의 실시간 소재 {liveAds.ads.length}/5 · 확장소재 {liveAds.extensions.length}</span>
+            <span className="viz-sub">수정은 B 방식(기존 삭제 → 새 등록 → 검수)이라 검수 동안 해당 소재 노출이 비어요.</span></div>
+          <ul className="line-campaigns">{liveAds.ads.map((a) => <li key={a.id}>
+            <b>{a.headline}</b><small> {a.description}</small>
+            <em>{a.on ? "" : "OFF · "}{a.inspect === "APPROVED" ? "검수 통과" : a.inspect === "UNDER_REVIEW" || a.inspect === "PENDING" ? "검수 중" : a.inspect}</em>
+            <a className="link-button small" href={a.pcUrl} target="_blank" rel="noreferrer">🔗 랜딩</a>
+            <button className="link-button small" disabled={!!adBusy} onClick={() => void editAd(liveAds.adgroupId, a)}>수정</button>
+          </li>)}</ul>
+          {liveAds.extensions.length > 0 && <><div className="viz-head" style={{ marginTop: 10 }}><span className="viz-title">확장소재</span></div>
+            <ul className="line-campaigns">{liveAds.extensions.map((x) => <li key={x.id}>
+              <b>{EXT_LABEL[x.type] || x.type}</b>
+              <em>{x.on ? "" : "OFF · "}{x.inspect === "APPROVED" ? "검수 통과" : x.inspect || ""}</em>
+              <small title={x.content}>{x.content.slice(0, 80)}</small>
+            </li>)}</ul></>}
+        </article>}
 
         <div className="viz-card table-card"><div className="table-wrap">
           {tab === "adgroups" && <table className="campaign-table sa-table"><thead><tr><th>유형</th><th>캠페인 › 광고그룹</th>{METRIC_HEAD.map((h) => <th key={h}>{h}</th>)}</tr></thead>
@@ -136,9 +216,11 @@ export function SaView({ accountIds, apiFetch, onOpenCampaign }: { onOpenCampaig
             <tbody>{filterBase(data.keywords, (r) => `${r.keyword} ${r.adgroup}`).slice(0, 300).map((r) => <tr key={`${r.adgroupId}|${r.id}`} className={r.active === false ? "inactive-row" : ""}>
               <td><b>{r.keyword}</b></td><td><small>{r.adgroup}</small></td><MetricCells m={r} /></tr>)}</tbody></table>}
 
-          {tab === "ads" && <table className="campaign-table sa-table"><thead><tr><th>소재 (제목 · 설명)</th><th>광고그룹</th>{METRIC_HEAD.map((h) => <th key={h}>{h}</th>)}</tr></thead>
+          {tab === "ads" && <table className="campaign-table sa-table"><thead><tr><th>소재 (제목 · 설명)</th><th /><th>광고그룹</th>{METRIC_HEAD.map((h) => <th key={h}>{h}</th>)}</tr></thead>
             <tbody>{filterBase(data.powerlinkAds, (r) => `${r.headline || ""} ${r.description || ""} ${r.adgroup}`).slice(0, 300).map((r) => <tr key={`${r.adgroupId}|${r.id}`} className={r.active === false ? "inactive-row" : ""}>
-              <td className="ad-copy"><b>{r.headline || "(제목 미조회)"}</b><small>{r.description}</small></td><td><small>{r.adgroup}</small></td><MetricCells m={r} /></tr>)}</tbody></table>}
+              <td className="ad-copy"><b>{r.headline || "(제목 미조회)"}</b><small>{r.description}</small></td>
+              <td><button className="link-button small" disabled={!!adBusy} title="B 방식 교체: 기존 소재 삭제 후 새 소재 등록 (검수 후 노출)" onClick={() => void (async () => { const d = await loadLiveAds(r.adgroupId); const ad = d?.ads.find((a) => a.id === r.id); if (ad) await editAd(r.adgroupId, ad); else window.alert("이 소재를 실시간 목록에서 찾지 못했어요 (이미 삭제됐을 수 있어요)."); })()}>수정</button></td>
+              <td><small>{r.adgroup}</small></td><MetricCells m={r} /></tr>)}</tbody></table>}
 
           {tab === "terms" && <table className="campaign-table sa-table"><thead><tr><th>검색어</th><th>광고그룹</th>{METRIC_HEAD.map((h) => <th key={h}>{h}</th>)}</tr></thead>
             <tbody>{filterBase(data.searchTerms.map((r) => ({ ...r, active: true })), (r) => r.term).slice(0, 400).map((r, i) => <tr key={`${r.adgroupId}|${r.term}|${i}`}>
