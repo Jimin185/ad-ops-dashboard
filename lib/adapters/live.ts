@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { cacheGet, cacheSet, isFinalDate, nextDailyRefresh } from "@/lib/cache";
+import { cacheGet, cacheGetStale, cacheSet, isFinalDate, nextDailyRefresh } from "@/lib/cache";
 import { registeredNaverSa } from "@/lib/naver-sa-registry";
 import type { Ad, AdAccount, AdGroup, Campaign, Channel, ChangeOperation, ConnectionStatus, CreativeRow, DailyRow, EntityStatus, EntityType, ReportResult, StatsRow } from "@/lib/types";
 
@@ -293,6 +293,11 @@ async function gfaGet(path: string, params: Record<string, string> = {}) {
   const call = async (token: string) => fetch(url, { headers: { Authorization: `Bearer ${token}`, AccessManagerAccountNo: config.manager }, cache: "no-store" });
   let response = await call(await gfaToken());
   if (response.status === 401) response = await call(await gfaToken(true));
+  // 계정이 많아 요청이 몰리면 429·5xx 가 난다 → 잠깐 쉬고 두 번까지 다시 시도
+  for (let retry = 0; retry < 2 && (response.status === 429 || response.status >= 500); retry++) {
+    await new Promise((r) => setTimeout(r, 800 * (retry + 1) + Math.random() * 400));
+    response = await call(await gfaToken());
+  }
   const text = await response.text();
   let body: any; try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
   if (!response.ok) {
@@ -349,10 +354,42 @@ const gfaStatus = (row: any): EntityStatus => {
   if (typeof row.enabled === "boolean") return row.enabled ? "on" : "off";
   return ["ON", "ACTIVE", "ENABLED", "RUNNING"].includes(String(row.status || row.campaignStatus || "").toUpperCase()) ? "on" : "off";
 };
+// 동시에 몇 개씩만 돌린다(모든 계정을 한꺼번에 부르면 네이버가 일부를 실패시켜 계정이 통째로 빠졌다).
+async function mapLimit<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const out: PromiseSettledResult<R>[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      try { out[i] = { status: "fulfilled", value: await run(items[i]) }; } catch (reason) { out[i] = { status: "rejected", reason }; }
+    }
+  }));
+  return out;
+}
 async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await gfaAccounts();
+  const month = new Date().toISOString().slice(0, 7);
+  const results = await mapLimit(accounts, 4, async (account) => {
+    const key = `gfa-campaigns:v1:${month}:${account.id}`;
+    try {
+      const rows = await gfaAccountCampaigns(account, includeOff);
+      await cacheSet(key, rows, Date.now() + 40 * 24 * 3600_000).catch(() => undefined);
+      return rows;
+    } catch (error) {
+      // 이번에 실패한 계정은 마지막으로 성공한 값으로 채운다(계정이 화면에서 사라지지 않게)
+      const last = await cacheGetStale<Campaign[]>(key, 40 * 24 * 3600_000).catch(() => null);
+      console.error(`GFA ${account.id} 조회 실패${last ? " (이전 값 사용)" : ""}:`, error instanceof Error ? error.message : error);
+      if (last) return last.value;
+      return gfaAccountCampaigns(account, includeOff, false); // 성과 없이라도 캠페인 목록은 보여준다
+    }
+  });
+  const ok = results.filter((r): r is PromiseFulfilledResult<Campaign[]> => r.status === "fulfilled");
+  if (accounts.length && !ok.length) { const first = results.find((r) => r.status === "rejected") as PromiseRejectedResult; throw first.reason; }
+  return ok.flatMap((r) => r.value);
+}
+async function gfaAccountCampaigns(account: AdAccount, includeOff: boolean, strict = true): Promise<Campaign[]> {
   const range = gfaPastRange();
-  return settleAccounts(accounts, async (account) => {
+  {
     const base = `/adAccounts/${account.id}`;
     const campaigns: any[] = [];
     for (let page = 0; page < 50; page++) {
@@ -361,7 +398,7 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       if (items.length < 100) break;
     }
     // 일반 캠페인은 애드셋 단위, 애드부스트는 캠페인 단위로 성과가 나오므로 시트 스크립트와 같은 방식으로 합산한다.
-    const fetchRows = (path: string) => range ? gfaPaged(`${base}${path}`, range).catch(() => [] as any[]) : Promise.resolve([] as any[]);
+    const fetchRows = (path: string) => range ? gfaPaged(`${base}${path}`, range).catch((e) => { if (strict) throw e; return [] as any[]; }) : Promise.resolve([] as any[]);
     const [perfSets, convSets, perfCamps, convCamps] = await Promise.all([
       fetchRows("/performance/past/adSets"),
       fetchRows("/performance/conversion/past/adSets"),
@@ -384,7 +421,7 @@ async function gfaCampaigns(includeOff: boolean): Promise<Campaign[]> {
         conversions: Math.round(s.conversions), roas: s.spend ? Math.round(s.revenue / s.spend * 100) : 0, accountId: account.id, accountName: account.name,
         active: gfaStatus(row) === "on" && !row.deleted && !["COMPLETED", "FINISHED", "ENDED", "DELETED", "STOPPED", "EXPIRED"].includes(String(row.status || "").toUpperCase()), rawStatus: row.status, product: productOf(row.objective) };
     }).filter((row) => includeOff || row.status === "on" || row.spend > 0);
-  });
+  }
 }
 
 // ---- 리포트: 매핑된 계정만 일자별로 조회 ----
@@ -833,6 +870,11 @@ async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
   const call = async (token: string) => fetch(url, { method, headers: { Authorization: `Bearer ${token}`, AccessManagerAccountNo: config.manager, "Content-Type": "application/json" }, body: body === undefined || method === "GET" ? undefined : JSON.stringify(body), cache: "no-store" });
   let response = await call(await gfaToken());
   if (response.status === 401) response = await call(await gfaToken(true));
+  // 계정이 많아 요청이 몰리면 429·5xx 가 난다 → 잠깐 쉬고 두 번까지 다시 시도
+  for (let retry = 0; retry < 2 && (response.status === 429 || response.status >= 500); retry++) {
+    await new Promise((r) => setTimeout(r, 800 * (retry + 1) + Math.random() * 400));
+    response = await call(await gfaToken());
+  }
   const text = await response.text();
   let parsed: any; try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { message: text }; }
   if (!response.ok) {
