@@ -166,7 +166,8 @@ export function sanitizeMix(input: any): MediaMix | null {
     channels,
     notes: String(input.notes || "").slice(0, 4000),
     review: input.review ? String(input.review).slice(0, 4000) : undefined,
-    lines: lines.length ? lines : undefined,
+    // 빈 배열은 '라인을 지웠다'는 뜻으로 그대로 보내고, 필드가 아예 없으면 undefined(기존 라인 유지)로 둔다
+    lines: lines.length ? lines : Array.isArray(input.lines) ? [] : undefined,
     createdAt: String(input.createdAt || now),
     updatedAt: now,
   };

@@ -96,11 +96,19 @@ export async function listMixes(advertiserId?: string): Promise<MediaMix[]> {
 }
 export async function upsertMix(mix: MediaMix): Promise<MediaMix> {
   const db = await ready();
-  const [row] = await db`insert into adops_mixes (id, advertiser_id, month, status, target_roas, channels, notes, review, lines)
-    values (${mix.id}, ${mix.advertiserId}, ${mix.month}, ${mix.status}, ${mix.targetRoas}, ${db.json(mix.channels as any)}, ${mix.notes}, ${mix.review || null}, ${mix.lines?.length ? db.json(mix.lines as any) : null})
-    on conflict (advertiser_id, month) do update set status = excluded.status, target_roas = excluded.target_roas, channels = excluded.channels,
-      notes = excluded.notes, review = excluded.review, lines = excluded.lines, updated_at = now()
-    returning *`;
+  // lines가 아예 없는 저장(믹스 탭·AI 초안 저장 등)은 매핑 탭이 공들여 만든 라인을 덮어쓰지 않도록 기존 값을 지킨다.
+  // 매핑 탭에서 라인을 전부 지우고 저장하면 빈 배열([])이 와서 그때만 비워진다.
+  const [row] = mix.lines === undefined
+    ? await db`insert into adops_mixes (id, advertiser_id, month, status, target_roas, channels, notes, review)
+      values (${mix.id}, ${mix.advertiserId}, ${mix.month}, ${mix.status}, ${mix.targetRoas}, ${db.json(mix.channels as any)}, ${mix.notes}, ${mix.review || null})
+      on conflict (advertiser_id, month) do update set status = excluded.status, target_roas = excluded.target_roas, channels = excluded.channels,
+        notes = excluded.notes, review = excluded.review, updated_at = now()
+      returning *`
+    : await db`insert into adops_mixes (id, advertiser_id, month, status, target_roas, channels, notes, review, lines)
+      values (${mix.id}, ${mix.advertiserId}, ${mix.month}, ${mix.status}, ${mix.targetRoas}, ${db.json(mix.channels as any)}, ${mix.notes}, ${mix.review || null}, ${mix.lines.length ? db.json(mix.lines as any) : null})
+      on conflict (advertiser_id, month) do update set status = excluded.status, target_roas = excluded.target_roas, channels = excluded.channels,
+        notes = excluded.notes, review = excluded.review, lines = excluded.lines, updated_at = now()
+      returning *`;
   return toMix(row);
 }
 export async function deleteMix(id: string) {
