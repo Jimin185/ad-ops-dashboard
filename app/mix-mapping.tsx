@@ -28,7 +28,7 @@ function ruleKeywords(lines: MixLine[], campaigns: Campaign[]) {
  * 믹스 매핑: 믹스(엑셀·CSV·붙여넣기)만 넣으면 라인을 만들고 캠페인을 추론해 붙인다.
  * 잘못 붙은 캠페인은 끌어서 다른 라인이나 미분류로 옮긴다(직접 지정이 키워드보다 우선).
  */
-export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclude, onApplyOps, excludedCount = 0 }: {
+export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclude, onApplyOps, apiFetch, excludedCount = 0 }: {
   onExclude?: (campaign: Campaign) => void;
   excludedCount?: number;
   advertiserId: string;
@@ -37,6 +37,8 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
   onSave: (mix: MediaMix) => Promise<void>;
   /** 일예산 일괄 적용 (page의 applyOps — 성공분은 화면에도 반영됨) */
   onApplyOps?: (ops: ChangeOperation[]) => Promise<void>;
+  /** 네이버 SA 토큰 헤더가 붙는 fetch (광고그룹 예산 조회용) */
+  apiFetch?: (url: string, init?: RequestInit) => Promise<Response>;
 }) {
   const thisMonth = periodRange("this_month").month;
   const [month, setMonth] = useState(thisMonth);
@@ -170,50 +172,85 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
 
   // ---- 예산 맞춰 일예산 일괄 세팅 ----
   // 라인의 남은 예산(기간 예산이 있으면 지금 구간 기준)을 남은 일수로 나눠 연결 캠페인에 배분한다.
-  type BudgetRow = { campaign: Campaign; lineName: string; current: number; next: number; checked: boolean; note: string; warn: boolean };
+  type BudgetRow = { campaign: Campaign; entityType: "campaign" | "adgroup"; targetId: string; targetName: string; lineName: string; current: number; next: number; checked: boolean; note: string; warn: boolean };
   const [plan, setPlan] = useState<BudgetRow[] | null>(null);
   const [applyBusy, setApplyBusy] = useState(false);
   const BIG = 500_000; // 일예산 경고 기준
 
-  function buildPlan() {
+  function rowOf(base: Omit<BudgetRow, "checked" | "note" | "warn">, extraNote = "", forceOff = ""): BudgetRow {
+    const { current, next } = base;
+    const exhausted = next < 100;
+    const warn = !forceOff && !exhausted && (next >= BIG || (current > 0 && next >= current * 10));
+    return {
+      ...base, warn,
+      checked: !forceOff && !exhausted && next !== current,
+      note: forceOff ? forceOff : exhausted ? "남은 예산 없음 — OFF 검토" : next === current ? "현재와 동일" :
+        warn ? (next >= BIG ? `${won.format(BIG)} 이상 — 자릿수 확인!` : `현재의 ${Math.round(next / Math.max(current, 1))}배 — 확인 필요`) : extraNote,
+    };
+  }
+
+  /** 캠페인 예산이 없는 캠페인(Meta ABO·GFA·네이버 그룹예산 운영)은 광고그룹 예산으로 내려가 배분한다 */
+  async function buildPlan() {
     const daysLeft = Math.max(1, dim - day + 1);
-    const rows: BudgetRow[] = [];
-    for (const r of results) {
-      if (!r.line.budget) continue;
-      const advice = periodAdvice(r.line, r.spend, day);
-      const lineDaily = advice ? advice.daily : Math.max(0, r.line.budget - r.spend) / daysLeft;
-      const targets = r.campaigns.filter(isRunning);
-      if (!targets.length) continue;
-      // 배분: 이번 달 소진 비중대로, 소진이 없으면 균등
-      const spendSum = targets.reduce((s, c) => s + c.spend, 0);
-      for (const c of targets) {
-        const share = spendSum > 0 ? c.spend / spendSum : 1 / targets.length;
-        const next = Math.round(lineDaily * share / 100) * 100;
-        const current = c.dailyBudget || 0;
-        const exhausted = next < 100;
-        const warn = !exhausted && (next >= BIG || (current > 0 && next >= current * 10));
-        rows.push({
-          campaign: c, lineName: r.line.name, current, next, warn,
-          checked: !exhausted && next !== current,
-          note: exhausted ? "남은 예산 없음 — OFF 검토" : next === current ? "현재와 동일" :
-            warn ? (next >= BIG ? `${won.format(BIG)} 이상 — 자릿수 확인!` : `현재의 ${Math.round(next / Math.max(current, 1))}배 — 확인 필요`) :
-            (c.channel === "google_ads" ? "공유예산이면 적용 시 거절돼요 · " : "") +
-            (advice ? `${advice.period.from}~${advice.period.to}일 구간 · 남은 ${advice.daysLeft}일` : `남은 ${daysLeft}일 기준`),
-        });
+    setBusy("예산 단위(캠페인/광고그룹)를 확인하는 중…");
+    try {
+      const rows: BudgetRow[] = [];
+      // 캠페인 예산이 없는 캠페인들의 광고그룹을 미리 받아 둔다
+      const needGroups = results.flatMap((r) => r.line.budget ? r.campaigns.filter((c) => isRunning(c) && !c.dailyBudget && c.channel !== "google_ads") : []);
+      const groupsByCampaign = new Map<string, Array<{ id: string; name: string; dailyBudget: number; lifetimeBudget?: number; active?: boolean; status: string }>>();
+      await Promise.all([...new Map(needGroups.map((c) => [c.id, c])).values()].map(async (c) => {
+        try {
+          const res = await (apiFetch || fetch)(`/api/entities?channel=${c.channel}&campaignId=${encodeURIComponent(c.id)}`);
+          const data = await res.json();
+          if (res.ok) groupsByCampaign.set(c.id, data.adgroups || []);
+        } catch { /* 이 캠페인은 캠페인 단위로 시도 */ }
+      }));
+      for (const r of results) {
+        if (!r.line.budget) continue;
+        const advice = periodAdvice(r.line, r.spend, day);
+        const lineDaily = advice ? advice.daily : Math.max(0, r.line.budget - r.spend) / daysLeft;
+        const targets = r.campaigns.filter(isRunning);
+        if (!targets.length) continue;
+        const baseNote = advice ? `${advice.period.from}~${advice.period.to}일 구간 · 남은 ${advice.daysLeft}일` : `남은 ${daysLeft}일 기준`;
+        // 배분: 이번 달 소진 비중대로, 소진이 없으면 균등
+        const spendSum = targets.reduce((s, c) => s + c.spend, 0);
+        for (const c of targets) {
+          const share = spendSum > 0 ? c.spend / spendSum : 1 / targets.length;
+          const campTarget = lineDaily * share;
+          const flat = c.channel === "naver_sa" && (c.product || "").includes("브랜드");
+          if (flat) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "브랜드검색은 정액제 — 일예산 없음")); continue; }
+          const groups = groupsByCampaign.get(c.id);
+          if (!c.dailyBudget && c.channel !== "google_ads") {
+            // 캠페인 예산 없음 → 광고그룹(광고세트) 예산으로 배분: 기존 그룹예산 비중대로, 없으면 균등
+            const act = (groups || []).filter((g) => g.active ?? g.status === "on");
+            const usable = act.length ? act : groups || [];
+            if (!usable.length) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "캠페인 예산이 없고 광고그룹도 못 찾음 — 수동 확인")); continue; }
+            const bsum = usable.reduce((s, g) => s + (g.dailyBudget || 0), 0);
+            for (const g of usable) {
+              const gshare = bsum > 0 ? (g.dailyBudget || 0) / bsum : 1 / usable.length;
+              const next = Math.round(campTarget * gshare / 100) * 100;
+              const lifetime = g.lifetimeBudget ? "총예산(기간) 사용 그룹 — 수동 확인" : "";
+              rows.push(rowOf({ campaign: c, entityType: "adgroup", targetId: g.id, targetName: `${c.name} › ${g.name}`, lineName: r.line.name, current: g.dailyBudget || 0, next }, `그룹예산 운영 · ${baseNote}`, lifetime));
+            }
+          } else {
+            rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 },
+              (c.channel === "google_ads" ? "공유예산이면 적용 시 거절돼요 · " : "") + baseNote));
+          }
+        }
       }
-    }
-    if (!rows.length) { setNotice("일예산을 계산할 라인이 없어요. 예산이 있는 라인에 운영 중 캠페인을 연결해 주세요."); return; }
-    setPlan(rows.sort((a, b) => Number(b.checked) - Number(a.checked) || b.next - a.next));
+      if (!rows.length) { setNotice("일예산을 계산할 라인이 없어요. 예산이 있는 라인에 운영 중 캠페인을 연결해 주세요."); return; }
+      setPlan(rows.sort((a, b) => Number(b.checked) - Number(a.checked) || b.next - a.next));
+    } finally { setBusy(""); }
   }
   async function applyPlan() {
     if (!plan || !onApplyOps) return;
     const picked = plan.filter((r) => r.checked && r.next > 0);
     if (!picked.length) return;
     const danger = picked.filter((r) => r.warn);
-    if (!window.confirm(`${picked.length}개 캠페인의 일예산을 바꿉니다.${danger.length ? `\n⚠️ 경고 표시된 ${danger.length}건이 포함돼 있어요 — 금액을 다시 확인했나요?` : ""}`)) return;
+    if (!window.confirm(`${picked.length}개 대상(캠페인·광고그룹)의 일예산을 바꿉니다.${danger.length ? `\n⚠️ 경고 표시된 ${danger.length}건이 포함돼 있어요 — 금액을 다시 확인했나요?` : ""}`)) return;
     setApplyBusy(true);
     try {
-      await onApplyOps(picked.map((r) => ({ kind: "update_budget", channel: r.campaign.channel, entityType: "campaign", id: r.campaign.id, dailyBudget: r.next })));
+      await onApplyOps(picked.map((r) => ({ kind: "update_budget", channel: r.campaign.channel, entityType: r.entityType, id: r.targetId, dailyBudget: r.next })));
       setPlan(null);
     } finally { setApplyBusy(false); }
   }
@@ -250,7 +287,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         </div>
         <div className="mix-actions">
           {lines.length > 0 && <nav className="segmented small"><button className={layout === "table" ? "active" : ""} onClick={() => setLayout("table")}>믹스 표</button><button className={layout === "board" ? "active" : ""} onClick={() => setLayout("board")}>라인 띠</button></nav>}
-          {lines.length > 0 && month === thisMonth && onApplyOps && <button className="secondary" disabled={!!busy || applyBusy} onClick={buildPlan}>일예산 맞추기</button>}
+          {lines.length > 0 && month === thisMonth && onApplyOps && <button className="secondary" disabled={!!busy || applyBusy} onClick={() => void buildPlan()}>일예산 맞추기</button>}
           <button className="secondary" onClick={() => setImportOpen(!importOpen)}>믹스 넣기</button>
           {!lines.length && mixes.find((m) => m.month === shiftMonth(month, -1))?.lines?.length ? <button className="secondary" onClick={() => change(mixes.find((m) => m.month === shiftMonth(month, -1))!.lines!.map((l) => ({ ...l, id: crypto.randomUUID() })))}>지난달 매핑 복사</button> : null}
           <button className="primary" disabled={!dirty || !!busy} onClick={() => void save()}>{dirty ? "저장" : "저장됨"}</button>
@@ -275,10 +312,10 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         </div>
         <div className="table-wrap"><table className="campaign-table">
           <thead><tr><th /><th>라인</th><th>캠페인</th><th>현재 일예산</th><th>새 일예산</th><th>비고</th></tr></thead>
-          <tbody>{plan.map((r, i) => <tr key={r.campaign.id} className={r.warn && r.checked ? "over" : ""}>
+          <tbody>{plan.map((r, i) => <tr key={r.targetId} className={r.warn && r.checked ? "over" : ""}>
             <td><input type="checkbox" checked={r.checked} onChange={(e) => setPlan(plan.map((x, j) => j === i ? { ...x, checked: e.target.checked } : x))} /></td>
             <td>{r.lineName}</td>
-            <td><span className={`channel ${r.campaign.channel}`}>{CHANNEL_LABEL[r.campaign.channel].replace("네이버 ", "")}</span> {r.campaign.name}</td>
+            <td><span className={`channel ${r.campaign.channel}`}>{CHANNEL_LABEL[r.campaign.channel].replace("네이버 ", "")}</span> {r.targetName}{r.entityType === "adgroup" ? <small className="viz-sub"> · 그룹예산</small> : null}</td>
             <td className="num">{r.current ? won.format(r.current) : "–"}</td>
             <td className="num"><input className="note-input num" style={{ width: "7.5em", textAlign: "right" }} value={r.next.toLocaleString()} inputMode="numeric"
               onChange={(e) => { const v = Number(e.target.value.replace(/[^0-9]/g, "")) || 0; setPlan(plan.map((x, j) => j === i ? { ...x, next: v, warn: v >= BIG || (x.current > 0 && v >= x.current * 10) } : x)); }} /></td>
