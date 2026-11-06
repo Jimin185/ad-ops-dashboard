@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Advertiser, MediaMix } from "@/lib/mix";
-import { matchMix, mixTotalBudget } from "@/lib/mix";
+import { lineGroups, matchMix, mixTotalBudget } from "@/lib/mix";
 import { ReportView } from "./report-view";
 import { MixView } from "./mix-view";
 import { CreativeView } from "./creative-view";
@@ -13,6 +13,21 @@ import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from ".
 import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
 
 type Attachment = { name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string };
+type ChatSession = { id: string; title: string; updatedAt: string; messages: ChatMessage[] };
+const WELCOME: ChatMessage = { role: "assistant", content: "안녕하세요. 성과 리포트, 월별 미디어 믹스 초안, 믹스에 맞춘 예산 조정, 소재 카피 시안까지 도와드릴게요. 믹스·예산 표(엑셀·CSV)를 첨부하고 '반영해줘'라고 하면 AI 없이 표 그대로 초안과 변경 미리보기를 만들어요. 예산·상태 변경은 확인 후에만 적용됩니다." };
+/** 패널은 떠 있는 버튼 위에 붙되 화면 밖으로 나가지 않게 */
+function panelStyle(pos: { right: number; bottom: number }): React.CSSProperties {
+  if (typeof window === "undefined") return {};
+  const h = Math.min(680, window.innerHeight - 125), w = Math.min(410, window.innerWidth - 24);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  // 버튼 위에 자리가 있으면 위로, 없으면 버튼 옆(왼쪽, 안 되면 오른쪽)에 붙인다
+  if (pos.bottom + 68 + h <= vh - 8) return { right: Math.max(8, Math.min(pos.right, vw - w - 8)), bottom: pos.bottom + 68 };
+  const bottom = Math.max(8, Math.min(pos.bottom, vh - h - 8));
+  const leftSide = pos.right + 68;
+  const right = leftSide + w <= vw - 8 ? leftSide : Math.max(8, pos.right - w - 12);
+  return { right, bottom };
+}
+const titleOf = (messages: ChatMessage[]) => (messages.find((m) => m.role === "user")?.content || "새 대화").replace(/\s+/g, " ").slice(0, 40);
 type ChatMessage = { role: "user" | "assistant"; content: string; attachments?: string[]; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number }; model?: string };
 type DashTab = "report" | "mix" | "ops" | "detail";
 const MIX_STORAGE = "adops-mixes";
@@ -105,7 +120,8 @@ function MixDraftCard({ mix, onApply }: { mix: MediaMix; onApply: (mix: MediaMix
   return (
     <div className="confirm-card">
       <strong>{mix.month} 미디어 믹스 초안 · 총 {won.format(mixTotalBudget(mix))} · 목표 ROAS {mix.targetRoas}%</strong>
-      {Object.entries(mix.channels).map(([channel, plan]) => <div className="change-row" key={channel}><span>{channelLabel[channel as Channel]}</span><span>{won.format(plan?.budget || 0)} · ROAS {plan?.targetRoas || 0}%</span></div>)}
+      {Object.entries(mix.channels).map(([channel, plan]) => <div className="change-row" key={channel}><span>{channelLabel[channel as Channel]}</span><span>{won.format(plan?.budget || 0)}{plan?.targetRoas ? ` · ROAS ${plan.targetRoas}%` : ""}</span></div>)}
+      {mix.lines?.length ? <small className="viz-sub">라인 {mix.lines.length}개 · 믹스구분 {lineGroups(mix.lines).join(", ")}</small> : null}
       <div className="confirm-actions">
         <button className="primary" disabled={state === "saving" || state === "done"} onClick={async () => { setState("saving"); try { await onApply(mix); setState("done"); } catch { setState("error"); } }}>{state === "done" ? "믹스에 저장됨" : state === "saving" ? "저장 중…" : state === "error" ? "다시 시도" : "믹스로 저장(초안)"}</button>
       </div>
@@ -168,19 +184,62 @@ export default function Dashboard() {
   const [progress, setProgress] = useState("");
   const [advertisersFailed, setAdvertisersFailed] = useState(false);
   const [unread, setUnread] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: "assistant", content: "안녕하세요. 성과 리포트, 월별 미디어 믹스 초안, 믹스에 맞춘 예산 조정, 소재 카피 시안까지 도와드릴게요. 예산·상태 변경은 확인 후에만 적용됩니다." },
-  ]);
-  // 대화는 이 브라우저에 저장해 화면을 옮기거나 새로고침해도 남는다(최근 40개).
+  const [messages, setMessages] = useState<ChatMessage[]>([WELCOME]);
+  // 대화 기록은 이 브라우저(localStorage)에 저장한다: 최근 30개 대화 × 대화당 60개 메시지. 확인 카드(변경 승인)는 저장하지 않는다.
+  const [chatId, setChatId] = useState(() => crypto.randomUUID());
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [chatModel, setChatModel] = useState<"gemini" | "claude">("gemini");
   const chatRestored = useRef(false);
   useEffect(() => {
-    try { const saved = JSON.parse(localStorage.getItem("adops-chat") || "[]"); if (Array.isArray(saved) && saved.length) setMessages(saved); } catch { /* 무시 */ }
+    try {
+      let list: ChatSession[] = JSON.parse(localStorage.getItem("adops-chats-v2") || "[]");
+      if (!Array.isArray(list)) list = [];
+      const legacy = JSON.parse(localStorage.getItem("adops-chat") || "[]");
+      if (!list.length && Array.isArray(legacy) && legacy.length > 1) list = [{ id: crypto.randomUUID(), title: titleOf(legacy), updatedAt: new Date().toISOString(), messages: legacy }];
+      setSessions(list);
+      if (list[0]) { setChatId(list[0].id); setMessages(list[0].messages); }
+      const model = localStorage.getItem("adops-chat-model"); if (model === "claude" || model === "gemini") setChatModel(model);
+    } catch { /* 무시 */ }
     chatRestored.current = true;
   }, []);
   useEffect(() => {
-    if (!chatRestored.current) return;
-    try { localStorage.setItem("adops-chat", JSON.stringify(messages.slice(-40))); } catch { /* 용량 초과 등 */ }
-  }, [messages]);
+    if (!chatRestored.current || messages.length < 2) return;
+    setSessions((list) => {
+      const session: ChatSession = { id: chatId, title: titleOf(messages), updatedAt: new Date().toISOString(), messages: messages.slice(-60).map(({ pendingActions, ...m }) => m) };
+      const next = [session, ...list.filter((x) => x.id !== chatId)].slice(0, 30);
+      try { localStorage.setItem("adops-chats-v2", JSON.stringify(next)); } catch { /* 용량 초과 → 오래된 대화부터 줄여 다시 */ try { localStorage.setItem("adops-chats-v2", JSON.stringify(next.slice(0, 10))); } catch { /* 포기 */ } }
+      return next;
+    });
+  }, [messages, chatId]);
+  function newChat() { if (sending) return; setChatId(crypto.randomUUID()); setMessages([WELCOME]); setShowHistory(false); setAttachments([]); }
+  function openChat(session: ChatSession) { if (sending) return; setChatId(session.id); setMessages(session.messages.length ? session.messages : [WELCOME]); setShowHistory(false); }
+  function deleteChat(id: string) {
+    setSessions((list) => { const next = list.filter((x) => x.id !== id); try { localStorage.setItem("adops-chats-v2", JSON.stringify(next)); } catch { /* 무시 */ } return next; });
+    if (id === chatId) { setChatId(crypto.randomUUID()); setMessages([WELCOME]); }
+  }
+  function pickModel(model: "gemini" | "claude") { setChatModel(model); try { localStorage.setItem("adops-chat-model", model); } catch { /* 무시 */ } }
+  // 떠 있는 버튼 위치(오른쪽·아래 여백). 끌어서 옮기고, 패널도 같이 따라간다.
+  const [fabPos, setFabPos] = useState({ right: 28, bottom: 28 });
+  useEffect(() => { try { const p = JSON.parse(localStorage.getItem("adops-chat-pos") || "null"); if (p && typeof p.right === "number") setFabPos(p); } catch { /* 무시 */ } }, []);
+  const dragRef = useRef<{ x: number; y: number; right: number; bottom: number; moved: boolean } | null>(null);
+  function startDrag(e: React.PointerEvent) {
+    dragRef.current = { x: e.clientX, y: e.clientY, right: fabPos.right, bottom: fabPos.bottom, moved: false };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function moveDrag(e: React.PointerEvent) {
+    const d = dragRef.current; if (!d) return;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y;
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+    d.moved = true;
+    setFabPos({ right: Math.min(window.innerWidth - 64, Math.max(8, d.right - dx)), bottom: Math.min(window.innerHeight - 64, Math.max(8, d.bottom - dy)) });
+  }
+  function endDrag(onClick?: () => void) {
+    const d = dragRef.current; dragRef.current = null;
+    if (!d) return;
+    if (d.moved) { try { localStorage.setItem("adops-chat-pos", JSON.stringify(fabPos)); } catch { /* 무시 */ } }
+    else onClick?.();
+  }
   const chatOpenRef = useRef(false);
   useEffect(() => { chatOpenRef.current = chatOpen; if (chatOpen) setUnread(false); }, [chatOpen]);
 
@@ -573,7 +632,7 @@ export default function Dashboard() {
       let ok = false;
       for (let round = 0; round < 10; round += 1) {
         if (round > 0) setProgress(`작업이 길어 이어서 진행 중… (${round + 1}단계)`);
-        const response = await apiFetch("/api/assistant", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(continuation ? { continuation, context } : { messages: history, attachments: files, context }) });
+        const response = await apiFetch("/api/assistant", { method: "POST", signal: controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(continuation ? { continuation, context } : { messages: history, attachments: files, context, mode: chatModel }) });
         const raw = await response.text();
         try { data = JSON.parse(raw); } catch { data = { error: response.status === 504 || /timeout/i.test(raw) ? "응답 시간이 초과됐어요. 요청을 조금 나눠서 다시 시도해 주세요." : `서버 오류(${response.status})가 발생했어요. 잠시 후 다시 시도해 주세요.` }; }
         ok = response.ok && !data.error;
@@ -594,14 +653,31 @@ export default function Dashboard() {
   }
 
   const chatUi = (<>
-      <button className="chat-fab" onClick={() => setChatOpen((open) => !open)} aria-label="AI 어시스턴트 열기">✦{(unread || sending) && <span className={`chat-fab-dot${sending ? " busy" : ""}`} title={sending ? "AI가 작업 중이에요" : "새 답변이 있어요"} />}</button>
-      {chatOpen && <aside className="chat-panel">
-        <div className="chat-head"><div><b>AI 광고 운영 어시스턴트</b><small>변경은 승인 후 적용됩니다</small></div><button onClick={() => setChatOpen(false)}>×</button></div>
+      <button className="chat-fab" style={{ right: fabPos.right, bottom: fabPos.bottom }} title="끌어서 옮길 수 있어요" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => endDrag(() => setChatOpen((open) => !open))} aria-label="AI 어시스턴트 열기">✦{(unread || sending) && <span className={`chat-fab-dot${sending ? " busy" : ""}`} title={sending ? "AI가 작업 중이에요" : "새 답변이 있어요"} />}</button>
+      {chatOpen && <aside className="chat-panel" style={panelStyle(fabPos)}>
+        <div className="chat-head" onPointerDown={(e) => { if ((e.target as HTMLElement).closest("button,select")) return; startDrag(e); }} onPointerMove={moveDrag} onPointerUp={() => endDrag()} title="끌어서 옮길 수 있어요">
+          <div><b>AI 어시스턴트</b><small>변경은 승인 후 적용</small></div>
+          <div className="chat-head-actions">
+            <select className="model-select" value={chatModel} onChange={(e) => pickModel(e.target.value as "gemini" | "claude")} title="답할 모델">
+              <option value="gemini">Gemini (무료)</option><option value="claude">Claude</option>
+            </select>
+            <button title="새 채팅" onClick={newChat} disabled={sending}>＋</button>
+            <button title="지난 채팅" className={showHistory ? "active" : ""} onClick={() => setShowHistory((v) => !v)}>☰</button>
+            <button title="닫기" onClick={() => setChatOpen(false)}>×</button>
+          </div>
+        </div>
+        {showHistory && <div className="chat-history">
+          <div className="chat-history-head"><b>지난 채팅</b><small>이 브라우저에 최근 30개까지 저장돼요</small></div>
+          {sessions.length ? sessions.map((session) => <div key={session.id} className={`chat-history-item${session.id === chatId ? " active" : ""}`}>
+            <button className="link-button" onClick={() => openChat(session)}><b>{session.title}</b><small>{new Date(session.updatedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} · {session.messages.length}개</small></button>
+            <button className="link-button danger" title="삭제" onClick={() => deleteChat(session.id)}>삭제</button>
+          </div>) : <p className="viz-sub">아직 저장된 채팅이 없어요.</p>}
+        </div>}
         <div className="messages">
           {messages.map((message, index) => <div className={`message ${message.role}`} key={index}>
             <MarkdownLite value={message.content} />
             {message.attachments?.length ? <small className="attach-note">📎 {message.attachments.join(", ")}</small> : null}
-            {message.usage && <small className="usage-note">{message.model ? `${message.model}${message.model === "Claude" ? "" : " (무료)"} · ` : ""}토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
+            {message.usage && <small className="usage-note">{message.model ? `${message.model}${message.model === "Claude" ? "" : message.model === "표 가져오기" ? " (AI 미사용)" : " (무료)"} · ` : ""}토큰 입력 {message.usage.input.toLocaleString()}{message.usage.cached ? ` (캐시 ${message.usage.cached.toLocaleString()})` : ""} · 출력 {message.usage.output.toLocaleString()}</small>}
             {message.mixDrafts?.map((mix) => <MixDraftCard key={mix.id + mix.month} mix={mix} onApply={saveMix} />)}
             {message.pendingActions?.map((action) => <ConfirmCard key={action.id} action={action} onDone={(notice) => { setMessages((current) => [...current, { role: "assistant", content: notice }]); void refresh(true); }} />)}
           </div>)}

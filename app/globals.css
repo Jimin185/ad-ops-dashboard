@@ -333,3 +333,19 @@ body { background:#fff; color:#323232; }
 .lines-table tr.group-row td { background:var(--track); border-top:2px solid var(--line, #ddd); }
 .lines-table .group-input { display:block; width:100%; font-size:12px; margin-bottom:4px; opacity:.8; }
 .group-table td { vertical-align:top; white-space:nowrap; }
+/* 채팅: 이동·새 채팅·기록·모델 선택 */
+.chat-fab { touch-action:none; cursor:grab; }
+.chat-head { cursor:move; user-select:none; touch-action:none; gap:8px; }
+.chat-head-actions { display:flex; align-items:center; gap:4px; }
+.chat-head-actions button { font-size:18px; width:30px; height:30px; border-radius:8px; color:#fff; }
+.chat-head-actions button.active, .chat-head-actions button:hover { background:rgba(255,255,255,.12); }
+.chat-head-actions button:disabled { opacity:.4; }
+.model-select { background:#2a352b; color:#fff; border:1px solid #3d4a3e; border-radius:8px; font-size:12px; padding:4px 6px; }
+.chat-history { max-height:45%; overflow-y:auto; border-bottom:1px solid var(--line); background:#fff; padding:10px 12px; }
+.chat-history-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+.chat-history-head small { color:var(--muted); font-size:11px; }
+.chat-history-item { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:6px 4px; border-radius:8px; }
+.chat-history-item.active { background:var(--green-soft); }
+.chat-history-item > .link-button:first-child { text-align:left; flex:1; min-width:0; }
+.chat-history-item b { display:block; font-size:13px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.chat-history-item small { color:var(--muted); font-size:11px; }
