@@ -849,14 +849,16 @@ async function gfaTry(label: string, path: string, bodies: unknown[]) {
 }
 async function gfaSetBudget(account: string, entityType: EntityType, id: string, amount: number) {
   if (entityType !== "adgroup") throw new Error("GFA는 광고세트(광고그룹) 단위로 예산을 바꿀 수 있어요. 캠페인 아래 광고세트의 예산을 바꿔 주세요.");
-  const current = await gfaRequest("GET", `adAccounts/${account}/adSets/${id}`);
-  const row = { ...(current?.data && !Array.isArray(current.data) ? current.data : current) };
-  // 예산 필드가 응답마다 다르다: budgetAmount 평면형 / budget.dailyBudget 중첩형 / dailyBudget. 있는 쪽을 모두 맞춰 넣는다.
-  row.budgetAmount = Math.round(amount);
-  if (row.dailyBudget !== undefined) row.dailyBudget = Math.round(amount);
-  if (row.budget && typeof row.budget === "object") row.budget = { ...row.budget, dailyBudget: Math.round(amount) };
-  const { status: _s, spentBudgetRatio: _r, ...clean } = row;
-  return gfaTry("예산 변경", `adAccounts/${account}/adSets/edit`, [clean, row, [clean]]);
+  // 공식 스키마(OpenAPI): POST /adSets/edit 는 editType 구분자를 가진 AdSetEditBudgetParam을 받는다
+  //   { editType, adSetNos: [...], budgetType: DAILY|TOTAL, budgetAmount }
+  // editType의 실제 type id 값은 문서에 없어 후보를 차례로 시도한다. 실패 시 서버가 허용 목록을 에러로 알려준다.
+  const base = { adSetNos: [Number(id)], budgetType: "DAILY", budgetAmount: Math.round(amount) };
+  return gfaTry("예산 변경", `adAccounts/${account}/adSets/edit`, [
+    { editType: "BUDGET", ...base },
+    { editType: "AdSetEditBudgetParam", ...base },
+    { editType: "DAILY_BUDGET", ...base },
+    { editType: "EDIT_BUDGET", ...base },
+  ]);
 }
 async function gfaSetActive(account: string, entityType: EntityType, id: string, on: boolean) {
   const resource = GFA_RESOURCE[entityType];
