@@ -1247,7 +1247,8 @@ export const liveAdapter = {
         if (operation.entityType !== "campaign") throw new Error("Google Ads는 캠페인 예산만 변경할 수 있어요.");
         // 구글 예산은 campaign_budget 리소스라 여러 캠페인이 공유할 수 있다.
         // 전용 예산일 때만 바꾸고, 공유 예산은 다른 캠페인까지 같이 바뀌므로 거절한다.
-        const rows = await googleSearch(key.account, `SELECT campaign.id, campaign_budget.resource_name, campaign_budget.explicitly_shared, campaign_budget.reference_count FROM campaign WHERE campaign.id = ${key.id}`);
+        const rows = await googleSearch(key.account, `SELECT campaign.id, campaign.advertising_channel_type, campaign_budget.resource_name, campaign_budget.explicitly_shared, campaign_budget.reference_count FROM campaign WHERE campaign.id = ${key.id}`);
+        if (rows?.[0]?.campaign?.advertisingChannelType === "VIDEO") throw new Error("구글 영상(유튜브) 캠페인은 구글이 API 수정을 막아 두었어요. 구글애즈 화면에서 직접 바꿔 주세요.");
         const budget = rows?.[0]?.campaignBudget;
         if (!budget?.resourceName) throw new Error("캠페인 예산을 찾지 못했어요.");
         if (budget.explicitlyShared) throw new Error(`공유 예산이라 바꿀 수 없어요 (캠페인 ${Number(budget.referenceCount) || "여러 "}개가 함께 사용). 구글애즈에서 전용 예산으로 바꾸거나 공유 예산을 직접 수정해 주세요.`);

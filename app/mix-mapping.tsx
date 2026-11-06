@@ -230,6 +230,8 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         const note = [convNote, baseNote].filter(Boolean).join(" · ");
         const flat = c.channel === "naver_sa" && (c.product || "").includes("브랜드");
         if (flat) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "브랜드검색은 정액제 — 일예산 없음")); continue; }
+        const gvideo = c.channel === "google_ads" && (c.product || "").includes("동영상");
+        if (gvideo) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "구글 영상 캠페인은 API 수정 불가 — 구글애즈에서 수동 변경 (권장값 참고)")); continue; }
         const groups = groupsByCampaign.get(c.id);
         if (!c.dailyBudget && c.channel !== "google_ads") {
           // 캠페인 예산 없음 → 광고그룹(광고세트) 예산으로 배분: 기존 그룹예산 비중대로, 없으면 균등
