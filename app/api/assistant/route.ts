@@ -60,7 +60,7 @@ async function handle(request: Request) {
     const freeHistory = textFiles.length && history.length ? [...history.slice(0, -1), { ...history[history.length - 1], content: `${textFiles.map((f) => `[첨부 파일: ${f.name}]\n${String(f.data).slice(0, 40_000)}`).join("\n\n")}\n\n${history[history.length - 1].content}` }] : history;
     // 0) 믹스·예산 표를 첨부해 반영해 달라고 하면 AI 없이 표를 그대로 읽어 초안을 만든다(금액 그대로, 토큰 0).
     const lastText = String(history[history.length - 1]?.content || "");
-    if (!cont && textFiles.length && /믹스|반영|월예산|예산\s*표|예산안|수정안/.test(lastText) && body.mode !== "claude") {
+    if (!cont && textFiles.length && /믹스|반영|월예산|예산\s*표|예산안|수정안/.test(lastText)) {
       const preview = mixImportPreview(textFiles, lastText, ctx);
       if (preview) return Response.json(preview);
     }
