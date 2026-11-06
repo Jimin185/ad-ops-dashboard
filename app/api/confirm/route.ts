@@ -21,7 +21,10 @@ async function handle(request: Request) {
       const result = await executeMediaPlan(operation.steps as MediaStep[], operation.accountKeys);
       return Response.json({ message: result.success ? `${result.completed}단계를 모두 실행했습니다.` : `${result.completed}단계까지 실행하고 ${(result.failedStep ?? 0) + 1}번째 단계에서 멈췄습니다: ${result.error}`, result }, { status: result.success ? 200 : 207 });
     }
-    if (operation.kind !== "create_text_ad") {
+    if (operation.kind === "replace_text_ad") {
+      const group = await getAdapter().resolveEntity("naver_sa", "adgroup", operation.adgroupId);
+      if (!group) return Response.json({ error: "광고그룹이 더 이상 존재하지 않습니다." }, { status: 409 });
+    } else if (operation.kind !== "create_text_ad") {
       const current = await getAdapter().resolveEntity(operation.channel, operation.entityType, operation.id);
       if (!current) return Response.json({ error: "변경 대상이 더 이상 존재하지 않습니다." }, { status: 409 });
     }
