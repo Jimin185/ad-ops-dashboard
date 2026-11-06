@@ -17,7 +17,7 @@ async function handle(request: Request) {
       // 캠페인 목록은 30분 캐시. 새로고침 버튼(?refresh=1)이나 변경 적용 후엔 바로 다시 가져온다.
       const refresh = new URL(request.url).searchParams.get("refresh") === "1";
       const registered = request.headers.get(NAVER_SA_HEADER) || "";
-      const key = `campaigns:v2:${new Date().toISOString().slice(0, 7)}:${createHash("sha1").update(registered).digest("hex").slice(0, 12)}`;
+      const key = `campaigns:v3:${new Date().toISOString().slice(0, 7)}:${createHash("sha1").update(registered).digest("hex").slice(0, 12)}`;
       // 30분이 지나도 하루 안의 값이면 먼저 바로 보여주고, 새 값은 뒤에서 받아 캐시에 넣는다(다음 요청부터 반영).
       const cached = refresh ? null : await cacheGetStale<any>(key, 26 * 3600_000);
       if (cached) {

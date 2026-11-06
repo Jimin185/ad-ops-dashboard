@@ -122,7 +122,9 @@ function StatusButton({ status, label, disabled, onToggle }: { status: string; l
     onClick={(e) => { e.stopPropagation(); if (window.confirm(`'${label}'을(를) ${next.toUpperCase()} 하시겠습니까?`)) onToggle(next); }}>{status.toUpperCase()}</button>;
 }
 /** 일예산: 입력 후 확인하면 바로 적용 */
-function BudgetButton({ value, disabled, onSave }: { value: number; disabled?: boolean; onSave: (value: number) => void }) {
+function BudgetButton({ value, disabled, onSave, lifetime, remaining }: { value: number; disabled?: boolean; onSave: (value: number) => void; lifetime?: number; remaining?: number }) {
+  // 총예산(기간 예산)으로 운영 중이면 일예산 대신 총액·잔액을 보여준다 (총예산은 매체 관리자에서 변경)
+  if (!value && lifetime) return <span className="value-button lifetime" title="총예산(기간 예산) 캠페인 · 변경은 매체 관리자에서">총 {won.format(lifetime)}{remaining !== undefined ? <small> 잔여 {won.format(remaining)}</small> : null}</span>;
   return <button className="value-button" disabled={disabled} title={disabled ? "이 매체는 화면에서 예산을 바로 바꿀 수 없어요" : "일예산 변경"}
     onClick={(e) => { e.stopPropagation(); const v = Number((window.prompt("변경할 일예산(원)을 입력하세요.", String(Math.round(value))) || "").replace(/[^0-9]/g, "")); if (v > 0 && v !== Math.round(value) && window.confirm(`일예산을 ${won.format(v)}으로 바꾸시겠습니까?`)) onSave(v); }}>{won.format(value)}</button>;
 }
@@ -759,7 +761,7 @@ export default function Dashboard() {
                     <td className="check-col" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selection.has(campaign.id)} onChange={(e) => toggleMany([{ id: campaign.id, channel: campaign.channel, entityType: "campaign", name: campaign.name }], e.target.checked)} /></td>
                     <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
                     <td><b>{selectedCampaign?.id === campaign.id ? "▾ " : "▸ "}{campaign.name}</b><small className="id">{campaign.accountName}{campaign.product ? ` · ${campaign.product}` : ""}</small></td>
-                    <td onClick={(e) => e.stopPropagation()}><BudgetButton value={campaign.dailyBudget} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} /></td>
+                    <td onClick={(e) => e.stopPropagation()}><BudgetButton value={campaign.dailyBudget} lifetime={campaign.lifetimeBudget} remaining={campaign.budgetRemaining} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} /></td>
                     <td>{won.format(campaign.spend)}</td><td>{campaign.roas}%</td>
                     <td onClick={(e) => e.stopPropagation()}><StatusButton status={campaign.status} label={campaign.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: next }])} /></td>
                   </tr>,
@@ -771,7 +773,7 @@ export default function Dashboard() {
                       <div className="entity-head">
                         <input type="checkbox" checked={selection.has(group.id)} onChange={(e) => toggleMany([{ id: group.id, channel: group.channel, entityType: "adgroup", name: group.name }], e.target.checked)} />
                         <button className="entity-name" onClick={() => adsByGroup[group.id] ? setAdsByGroup((cur) => { const next = { ...cur }; delete next[group.id]; return next; }) : void loadAds(group)}><b>{adsByGroup[group.id] ? "▾ " : "▸ "}{group.name}</b></button>
-                        <BudgetButton value={group.dailyBudget} disabled={group.channel === "google_ads"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: group.channel, entityType: "adgroup", id: group.id, dailyBudget: v }])} />
+                        <BudgetButton value={group.dailyBudget} lifetime={group.lifetimeBudget} remaining={group.budgetRemaining} disabled={group.channel === "google_ads"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: group.channel, entityType: "adgroup", id: group.id, dailyBudget: v }])} />
                         <StatusButton status={group.status} label={group.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: group.channel, entityType: "adgroup", id: group.id, status: next }])} />
                       </div>
                       {adsByGroup[group.id]?.map((ad) => <div className={`ad-row ${ad.active === false ? "inactive-row" : ""}`} key={ad.id}>

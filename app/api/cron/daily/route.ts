@@ -26,7 +26,7 @@ export async function GET(request: Request) {
         log.push(`monthly pending=${monthly.pending}`);
         if (monthly.pending) return next(url, 0, log);
         const snapshot = await getLiveSnapshot(true);
-        await cacheSet(`campaigns:v2:${new Date().toISOString().slice(0, 7)}:${createHash("sha1").update("").digest("hex").slice(0, 12)}`, snapshot, Date.now() + 30 * 60_000);
+        await cacheSet(`campaigns:v3:${new Date().toISOString().slice(0, 7)}:${createHash("sha1").update("").digest("hex").slice(0, 12)}`, snapshot, Date.now() + 30 * 60_000);
         log.push("campaigns cached");
         console.log(`[cron/daily] step 0: ${log.join(", ")}`);
         return next(url, 1, log);
