@@ -359,7 +359,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
           </tr>)}</tbody>
           <tfoot><tr><td colSpan={4}><b>적용 대상 {plan.filter((r) => r.checked).length}개 · 하루 합계</b></td>
             <td className="num"><b>{won.format(plan.filter((r) => r.checked).reduce((s, r) => s + r.next, 0))}</b></td>
-            <td className="viz-sub">월 환산 {compact(plan.filter((r) => r.checked).reduce((s, r) => s + r.next, 0) * dim)}</td></tr></tfoot>
+            <td className="viz-sub">남은 {Math.max(1, dim - day + 1)}일 환산 {compact(plan.filter((r) => r.checked).reduce((s, r) => s + r.next, 0) * Math.max(1, dim - day + 1))}</td></tr></tfoot>
         </table></div>
         <div className="mix-actions">
           <button className="primary" disabled={applyBusy || !plan.some((r) => r.checked && r.next > 0)} onClick={() => void applyPlan()}>{applyBusy ? "적용 중…" : "선택한 일예산 적용"}</button>
