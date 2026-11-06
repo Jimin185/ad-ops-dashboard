@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Campaign, Channel, DailyRow, ReportResult } from "@/lib/types";
-import { lineGroup, matchMix, type MediaMix } from "@/lib/mix";
+import { expectedSpend, lineGroup, matchMix, type MediaMix } from "@/lib/mix";
 
 // 채널 색은 채널(엔티티)에 고정한다. 순위나 필터에 따라 바뀌지 않는다.
 export const CHANNEL_ORDER: Channel[] = ["naver_sa", "naver_gfa", "meta", "google_ads"];
@@ -168,8 +168,10 @@ function niceTicks(max: number) {
   return Array.from({ length: 5 }, (_, i) => Math.round(i * step));
 }
 
-export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch, onOpenCampaign }: {
+export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch, onOpenCampaign, excluded = [] }: {
   onOpenCampaign?: (campaignId: string) => void;
+  /** 예산 제외 캠페인: 이번 달 보기에서는 합계·채널별에서 이번 달 누적값을 뺀다 */
+  excluded?: Campaign[];
   accountKeys: string[];
   campaigns: Campaign[];
   mixes: MediaMix[];
@@ -209,10 +211,16 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch,
     return [...map.values()];
   }, [rows, range.since, range.until]);
 
-  const totals = rows.reduce((acc, row) => ({ spend: acc.spend + row.spend, revenue: acc.revenue + row.revenue, conversions: acc.conversions + row.conversions, clicks: acc.clicks + row.clicks, impressions: acc.impressions + row.impressions }), { spend: 0, revenue: 0, conversions: 0, clicks: 0, impressions: 0 });
+  // 예산 제외 캠페인의 이번 달 누적(캠페인 목록 값). 계정 단위 일자 데이터에서는 캠페인을 가를 수 없어 이번 달 합계에서만 뺀다.
+  const excludedNow = period === "this_month" ? excluded.filter((c) => c.spend > 0 && accountKeys.includes(`${c.channel}:${c.accountId}`)) : [];
+  const exSum = (ch?: Channel) => excludedNow.filter((c) => !ch || c.channel === ch).reduce((a, c) => ({ spend: a.spend + c.spend, revenue: a.revenue + c.spend * c.roas / 100, conversions: a.conversions + c.conversions }), { spend: 0, revenue: 0, conversions: 0 });
+  const rawTotals = rows.reduce((acc, row) => ({ spend: acc.spend + row.spend, revenue: acc.revenue + row.revenue, conversions: acc.conversions + row.conversions, clicks: acc.clicks + row.clicks, impressions: acc.impressions + row.impressions }), { spend: 0, revenue: 0, conversions: 0, clicks: 0, impressions: 0 });
+  const exAll = exSum();
+  const totals = { ...rawTotals, spend: Math.max(0, rawTotals.spend - exAll.spend), revenue: Math.max(0, rawTotals.revenue - exAll.revenue), conversions: Math.max(0, rawTotals.conversions - exAll.conversions) };
   const byChannel = channels.map((channel) => {
     const list = rows.filter((row) => row.channel === channel);
-    const spend = list.reduce((s, r) => s + r.spend, 0), revenue = list.reduce((s, r) => s + r.revenue, 0), conversions = list.reduce((s, r) => s + r.conversions, 0);
+    const ex = exSum(channel);
+    const spend = Math.max(0, list.reduce((s, r) => s + r.spend, 0) - ex.spend), revenue = Math.max(0, list.reduce((s, r) => s + r.revenue, 0) - ex.revenue), conversions = Math.max(0, list.reduce((s, r) => s + r.conversions, 0) - ex.conversions);
     const plan = mix?.month === range.month ? mix.channels[channel] : undefined;
     return { channel, spend, revenue, conversions, roas: roasOf(spend, revenue), planBudget: plan?.budget || 0, planRoas: plan?.targetRoas || 0 };
   });
@@ -232,19 +240,19 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch,
     const pool = campaigns.filter((c) => accountKeys.includes(`${c.channel}:${c.accountId}`) && ((c.active ?? c.status === "on") || c.spend > 0));
     const { results, unassigned } = matchMix(mixForPeriod.lines, pool);
     const order: string[] = [];
-    const map = new Map<string, { group: string; budget: number; spend: number; revenue: number; conversions: number; byChannel: Partial<Record<Channel, { budget: number; spend: number }>> }>();
+    const map = new Map<string, { group: string; budget: number; expected: number; spend: number; revenue: number; conversions: number; byChannel: Partial<Record<Channel, { budget: number; spend: number }>> }>();
     for (const r of results) {
       const g = lineGroup(r.line);
-      if (!map.has(g)) { map.set(g, { group: g, budget: 0, spend: 0, revenue: 0, conversions: 0, byChannel: {} }); order.push(g); }
+      if (!map.has(g)) { map.set(g, { group: g, budget: 0, expected: 0, spend: 0, revenue: 0, conversions: 0, byChannel: {} }); order.push(g); }
       const row = map.get(g)!;
-      row.budget += r.line.budget; row.spend += r.spend; row.revenue += r.revenue; row.conversions += r.conversions;
+      row.budget += r.line.budget; row.expected += expectedSpend(r.line, elapsed, monthDays); row.spend += r.spend; row.revenue += r.revenue; row.conversions += r.conversions;
       // 라인 채널이 '전체'면 캠페인 채널별로 나눠 담는다
       if (r.line.channel !== "all") { const c = row.byChannel[r.line.channel] ||= { budget: 0, spend: 0 }; c.budget += r.line.budget; c.spend += r.spend; }
       else for (const camp of r.campaigns) { const c = row.byChannel[camp.channel] ||= { budget: 0, spend: 0 }; c.spend += camp.spend; }
     }
     const rest = unassigned.reduce((s, c) => s + c.spend, 0);
     return { rows: order.map((g) => map.get(g)!), unassignedSpend: rest, unassignedCount: unassigned.filter((c) => c.spend > 0).length };
-  }, [period, mixForPeriod, campaigns, accountKeys]);
+  }, [period, mixForPeriod, campaigns, accountKeys, elapsed, monthDays]);
   const progress = monthDays ? elapsed / monthDays : 0;
 
   const topCampaigns = campaigns.filter((c) => accountKeys.includes(`${c.channel}:${c.accountId}`) && c.spend > 0).sort((a, b) => b.spend - a.spend).slice(0, 10);
@@ -261,6 +269,7 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch,
       {error && <div className="connection-error"><b>리포트 오류</b><span>{error}</span></div>}
       {!!report?.errors.length && <div className="connection-error"><b>일부 계정 조회 실패</b>{report.errors.map((e) => <span key={`${e.channel}:${e.accountId}`}>{CHANNEL_LABEL[e.channel]} {e.accountId}: {e.message}</span>)}</div>}
 
+      {excludedNow.length > 0 && <p className="viz-sub notice-line">예산 제외 캠페인 {excludedNow.length}개(이번 달 {won.format(exAll.spend)})를 합계·채널별에서 뺐어요. 일자별 그래프는 계정 단위라 포함돼 있어요.</p>}
       <div className="kpi-row">
         <article className="viz-card kpi"><span className="viz-title">광고비</span><b>{won.format(totals.spend)}</b><small className="viz-sub">{period === "this_month" ? `월말 예상 ${won.format(projected)}` : `${elapsed}일`}</small></article>
         <article className="viz-card kpi"><span className="viz-title">매출(전환가치)</span><b>{won.format(totals.revenue)}</b><small className="viz-sub">전환 {Math.round(totals.conversions).toLocaleString()}건</small></article>
@@ -304,12 +313,13 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch,
           <thead><tr><th>믹스구분</th><th>예산 대비 집행</th>{channels.map((c) => <th key={c}>{CHANNEL_LABEL[c]}</th>)}<th>전환</th><th>ROAS</th></tr></thead>
           <tbody>{groupRows.rows.map((g) => {
             const ratio = g.budget ? g.spend / g.budget : 0;
-            const tone = !g.budget ? "" : ratio > progress * 1.15 ? "over" : ratio < progress * 0.85 ? "under" : "ok";
+            const plan = g.budget ? g.expected / g.budget : progress;
+            const tone = !g.budget ? "" : ratio > plan * 1.15 ? "over" : ratio < plan * 0.85 ? "under" : "ok";
             return <tr key={g.group}>
               <td><b>{g.group}</b></td>
               <td><div className="pace-cell"><b>{compactWon(g.spend)}</b>{g.budget ? <small> / {compactWon(g.budget)}</small> : null}</div>
-                {g.budget ? <div className="pace-track"><div className={`pace-fill ${tone}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} /><i style={{ left: `${Math.min(100, progress * 100)}%` }} /></div> : null}
-                {g.budget ? <small className={`pace-label ${tone}`}>소진 {Math.round(ratio * 100)}% · 경과 {Math.round(progress * 100)}%</small> : null}</td>
+                {g.budget ? <div className="pace-track"><div className={`pace-fill ${tone}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} /><i style={{ left: `${Math.min(100, plan * 100)}%` }} /></div> : null}
+                {g.budget ? <small className={`pace-label ${tone}`}>소진 {Math.round(ratio * 100)}% · 계획 {Math.round(plan * 100)}%</small> : null}</td>
               {channels.map((c) => { const v = g.byChannel[c]; return <td key={c}>{v ? <><b>{compactWon(v.spend)}</b>{v.budget ? <small className="viz-sub"> / {compactWon(v.budget)}</small> : null}</> : <span className="viz-sub">–</span>}</td>; })}
               <td>{Math.round(g.conversions).toLocaleString()}</td>
               <td><b>{g.spend ? pct(roasOf(g.spend, g.revenue)) : "–"}</b></td>

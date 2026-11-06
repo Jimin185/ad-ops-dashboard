@@ -121,3 +121,15 @@ export async function deleteNaverSa(customerId: string) {
 export async function sqlForCache() { return ready(); }
 
 export async function dbReady() { return ready(); }
+
+// ---- 광고주별 설정·예약 (adops_cache 테이블을 키-값 저장소로 쓴다. 메모리 캐시를 거치지 않아 여러 인스턴스에서도 최신값) ----
+export async function kvGet<T>(key: string): Promise<T | null> {
+  const db = await ready();
+  const [row] = await db`select value from adops_cache where key = ${key}`;
+  return (row?.value as T) ?? null;
+}
+export async function kvSet(key: string, value: unknown) {
+  const db = await ready();
+  await db`insert into adops_cache (key, value, expires_at, updated_at) values (${key}, ${db.json(value as any)}, null, now())
+    on conflict (key) do update set value = excluded.value, expires_at = null, updated_at = now()`;
+}

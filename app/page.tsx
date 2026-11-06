@@ -11,7 +11,8 @@ import { SaView } from "./sa-view";
 import { MarketView } from "./market-view";
 import { InsightsView } from "./insights-view";
 import { EMPTY_FILTER, FilterBar, lineCampaignIds, passes, type Filter } from "./filter-bar";
-import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, PendingAction } from "@/lib/types";
+import type { Ad, AdAccount, AdGroup, Campaign, ChangeOperation, Channel, ConnectionStatus, EntityType, PendingAction } from "@/lib/types";
+import { isExcluded, type AdvertiserSettings, type Schedule } from "@/lib/settings";
 
 type Attachment = { name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string };
 type ChatSession = { id: string; title: string; updatedAt: string; messages: ChatMessage[] };
@@ -131,6 +132,48 @@ function MixDraftCard({ mix, onApply }: { mix: MediaMix; onApply: (mix: MediaMix
 }
 
 const isRunning = (row: { active?: boolean; status: string }) => row.active ?? row.status === "on";
+
+type ScheduleTarget = { channel: Channel; entityType: EntityType; id: string; name: string };
+const kstDate = (offsetDays = 0) => new Date(Date.now() + 9 * 3600_000 + offsetDays * 86_400_000).toISOString().slice(0, 10);
+const ENTITY_LABEL: Record<EntityType, string> = { campaign: "캠페인", adgroup: "광고그룹", ad: "소재" };
+
+/** ON/OFF 예약 창: 날짜 + ON/OFF. OFF 는 전날 23시대, ON 은 당일 0시대에 실행 */
+function ScheduleDialog({ targets, existing, onClose, onSave }: { targets: ScheduleTarget[]; existing: Schedule[]; onClose: () => void; onSave: (date: string, status: "on" | "off") => Promise<void> }) {
+  const [date, setDate] = useState(kstDate(1));
+  const [status, setStatus] = useState<"on" | "off">("off");
+  const [busy, setBusy] = useState(false);
+  const pending = existing.filter((s) => !s.result && targets.some((t) => t.id === s.entityId));
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}>
+    <b>ON/OFF 예약 · {targets.length === 1 ? `${ENTITY_LABEL[targets[0].entityType]} '${targets[0].name}'` : `${targets.length}개`}</b>
+    <div className="modal-row"><label>날짜 <input type="date" value={date} min={kstDate(0)} onChange={(e) => setDate(e.target.value)} /></label>
+      <span className="segmented small"><button className={status === "off" ? "active" : ""} onClick={() => setStatus("off")}>OFF</button><button className={status === "on" ? "active" : ""} onClick={() => setStatus("on")}>ON</button></span></div>
+    <small className="viz-sub">{status === "off" ? `${date} 하루 전 밤 11시대에 미리 꺼서 ${date} 0시부터 안 돌아요.` : `${date} 0시대(0:00~0:59)에 켜요.`} 매체마다 날짜 예약 기능이 달라서, 대시보드가 그 시간에 직접 ON/OFF 해요. 결과는 다음 하루 동안 알림으로 떠요.</small>
+    {pending.length > 0 && <small className="viz-sub">이미 있는 예약: {pending.map((s) => `${s.date} ${s.status.toUpperCase()}`).join(", ")} (같은 날짜는 새 예약으로 바뀌어요)</small>}
+    <div className="modal-actions"><button className="secondary" onClick={onClose}>취소</button><button className="primary" disabled={busy || !date} onClick={async () => { setBusy(true); try { await onSave(date, status); onClose(); } catch { /* 안내는 onSave 에서 */ } finally { setBusy(false); } }}>{busy ? "저장 중…" : "예약"}</button></div>
+  </div></div>;
+}
+
+/** 예산 제외(숨김) 창: 이번 달만 / 모든 기간 */
+function ExcludeDialog({ campaigns, month, onClose, onSave }: { campaigns: Campaign[]; month: string; onClose: () => void; onSave: (scope: "month" | "all") => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const run = async (scope: "month" | "all") => { setBusy(true); try { await onSave(scope); onClose(); } catch { window.alert("저장하지 못했어요."); } finally { setBusy(false); } };
+  return <div className="modal-backdrop" onClick={onClose}><div className="modal" onClick={(e) => e.stopPropagation()}>
+    <b>예산에서 제외 · {campaigns.length === 1 ? `'${campaigns[0].name}'` : `${campaigns.length}개 캠페인`}</b>
+    <span className="viz-sub">믹스 매핑·예산 소진·리포트 합계에서 빼고, 매체별 데이터에서는 숨겨요. 광고는 그대로 돌아가요.</span>
+    <div className="modal-choices">
+      <button className="secondary" disabled={busy} onClick={() => void run("month")}><b>{month}만</b><small>이번 달만 우리 예산이 아닐 때</small></button>
+      <button className="secondary" disabled={busy} onClick={() => void run("all")}><b>모든 기간</b><small>지난 달·앞으로도 계속 빼기 (예: 내부 운영 플레이스 광고)</small></button>
+    </div>
+    <div className="modal-actions"><button className="link-button" onClick={onClose}>취소</button></div>
+  </div></div>;
+}
+
+/** 표의 ⏰ 버튼 + 걸린 예약 표시 */
+function ScheduleBadge({ target, schedules, onOpen }: { target: ScheduleTarget; schedules: Schedule[]; onOpen: (t: ScheduleTarget) => void }) {
+  const next = schedules.filter((s) => s.entityId === target.id && !s.result).sort((a, b) => a.date.localeCompare(b.date))[0];
+  return <button className={`schedule-button${next ? " has" : ""}`} title={next ? `${next.date} ${next.status.toUpperCase()} 예약됨 · 눌러서 추가/변경` : "ON/OFF 예약"} onClick={(e) => { e.stopPropagation(); onOpen(target); }}>
+    ⏰{next ? <small>{next.date.slice(5).replace("-", "/")} {next.status.toUpperCase()}</small> : null}</button>;
+}
 
 /** ON/OFF 토글: 팝업으로 한 번 확인하고 바로 적용 */
 function StatusButton({ status, label, disabled, onToggle }: { status: string; label: string; disabled?: boolean; onToggle: (next: "on" | "off") => void }) {
@@ -390,21 +433,77 @@ export default function Dashboard() {
   const advertiserCampaigns = useMemo(() => selectedAdvertiser ? campaigns.filter((c) => selectedAdvertiser.accountKeys.includes(`${c.channel}:${c.accountId}`)) : [], [campaigns, selectedAdvertiser]);
   // 이번 달 믹스 라인별 실적 (AI 어시스턴트에 요약만 넘겨 토큰을 아낀다)
   const currentMonth = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit" }).format(new Date()).slice(0, 7);
+
+  // ---- 광고주 설정(예산 제외)과 ON/OFF 예약 ----
+  const [settings, setSettings] = useState<AdvertiserSettings>({ exclusions: [] });
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [schedulesError, setSchedulesError] = useState("");
+  const [scheduleTargets, setScheduleTargets] = useState<ScheduleTarget[] | null>(null);
+  const [excludeTargets, setExcludeTargets] = useState<Campaign[] | null>(null);
+  const [showExcluded, setShowExcluded] = useState(false);
+  const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
+  useEffect(() => { try { setDismissedAlerts(JSON.parse(localStorage.getItem("adops-dismissed-alerts") || "[]")); } catch { /* 무시 */ } }, []);
+  const loadSettings = useCallback(async (advertiserId: string) => {
+    if (!advertiserId) { setSettings({ exclusions: [] }); setSchedules([]); return; }
+    const local = () => { try { return JSON.parse(localStorage.getItem(`adops-settings:${advertiserId}`) || "null") || { exclusions: [] }; } catch { return { exclusions: [] }; } };
+    try { const r = await fetch(`/api/settings?advertiserId=${encodeURIComponent(advertiserId)}`); const d = await r.json(); setSettings(r.ok ? d.settings : local()); } catch { setSettings(local()); }
+    try { const r = await fetch(`/api/schedules?advertiserId=${encodeURIComponent(advertiserId)}`); const d = await r.json(); setSchedules(r.ok ? d.schedules : []); setSchedulesError(r.ok ? "" : d.error || "예약을 불러오지 못했어요."); } catch { setSchedulesError("예약을 불러오지 못했어요."); }
+  }, []);
+  useEffect(() => { void loadSettings(selectedAdvertiserId); }, [selectedAdvertiserId, loadSettings]);
+  async function saveSettings(next: AdvertiserSettings) {
+    setSettings(next);
+    const r = await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advertiserId: selectedAdvertiserId, settings: next }) }).catch(() => null);
+    if (!r?.ok) { try { localStorage.setItem(`adops-settings:${selectedAdvertiserId}`, JSON.stringify(next)); } catch { /* 무시 */ } }
+  }
+  async function excludeCampaigns(list: Campaign[], scope: "month" | "all") {
+    const ids = new Set(list.map((c) => c.id));
+    const kept = settings.exclusions.filter((e) => !ids.has(e.campaignId) || (scope === "month" && !e.months?.length));
+    const added = list.filter((c) => !kept.some((e) => e.campaignId === c.id)).map((c) => {
+      const prev = settings.exclusions.find((e) => e.campaignId === c.id && e.months?.length);
+      return { campaignId: c.id, name: c.name, channel: c.channel, months: scope === "all" ? undefined : [...new Set([...(prev?.months || []), currentMonth])], createdAt: new Date().toISOString() };
+    });
+    await saveSettings({ exclusions: [...kept, ...added] });
+  }
+  async function includeCampaign(campaignId: string) {
+    // 이번 달만 해제할지, 완전히 해제할지
+    const e = settings.exclusions.find((x) => x.campaignId === campaignId);
+    if (!e) return;
+    const all = !e.months?.length;
+    if (all && !window.confirm(`'${e.name}'은(는) 모든 기간에서 제외돼 있어요. 다시 예산에 포함할까요? (모든 기간 해제)`)) return;
+    await saveSettings({ exclusions: settings.exclusions.flatMap((x) => x.campaignId !== campaignId ? [x] : all ? [] : (x.months || []).filter((m) => m !== currentMonth).length ? [{ ...x, months: (x.months || []).filter((m) => m !== currentMonth) }] : []) });
+  }
+  async function saveSchedules(targets: ScheduleTarget[], date: string, status: "on" | "off") {
+    const add = targets.map((t) => ({ id: crypto.randomUUID(), channel: t.channel, entityType: t.entityType, entityId: t.id, name: t.name, status, date }));
+    const r = await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advertiserId: selectedAdvertiserId, add }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { window.alert(d.error || "예약하지 못했어요."); throw new Error("fail"); }
+    setSchedules(d.schedules);
+  }
+  async function cancelSchedule(id: string) {
+    const r = await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advertiserId: selectedAdvertiserId, remove: [id] }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) setSchedules(d.schedules);
+  }
+  const excludedIds = useMemo(() => new Set(advertiserCampaigns.filter((c) => isExcluded(settings, c.id, currentMonth)).map((c) => c.id)), [advertiserCampaigns, settings, currentMonth]);
+  /** 예산·믹스·리포트 계산에 쓰는 캠페인(예산 제외 캠페인 뺌) */
+  const budgetCampaigns = useMemo(() => advertiserCampaigns.filter((c) => !excludedIds.has(c.id)), [advertiserCampaigns, excludedIds]);
+  const recentResults = schedules.filter((s) => s.result && Date.now() - new Date(s.result.at).getTime() < 24 * 3600_000 && !dismissedAlerts.includes(s.id));
+  function dismissAlerts() { const ids = [...dismissedAlerts, ...recentResults.map((s) => s.id)].slice(-300); setDismissedAlerts(ids); try { localStorage.setItem("adops-dismissed-alerts", JSON.stringify(ids)); } catch { /* 무시 */ } }
   const mixLineSummary = useMemo(() => {
     const mix = mixes.find((m) => m.month === currentMonth);
     if (!mix?.lines?.length) return undefined;
-    const { results, unassigned } = matchMix(mix.lines, advertiserCampaigns.filter((c) => (c.active ?? c.status === "on") || c.spend > 0));
+    const { results, unassigned } = matchMix(mix.lines, budgetCampaigns.filter((c) => (c.active ?? c.status === "on") || c.spend > 0));
     return {
       month: mix.month,
-      lines: results.map((r) => ({ group: r.line.group, line: r.line.name, channel: r.line.channel, budget: r.line.budget, targetRoas: r.line.targetRoas, spend: Math.round(r.spend), roas: Math.round(r.roas), campaigns: r.campaigns.map((c) => c.id) })),
+      lines: results.map((r) => ({ group: r.line.group, line: r.line.name, periods: r.line.periods, channel: r.line.channel, budget: r.line.budget, targetRoas: r.line.targetRoas, spend: Math.round(r.spend), roas: Math.round(r.roas), campaigns: r.campaigns.map((c) => c.id) })),
       unassigned: { count: unassigned.length, spend: Math.round(unassigned.reduce((s, c) => s + c.spend, 0)) },
     };
-  }, [mixes, advertiserCampaigns, currentMonth]);
+  }, [mixes, budgetCampaigns, currentMonth]);
 
   const currentMixLines = mixes.find((m) => m.month === currentMonth)?.lines;
   const campaignsById = useMemo(() => new Map(advertiserCampaigns.map((c) => [c.id, c])), [advertiserCampaigns]);
-  const lineSets = useMemo(() => lineCampaignIds(currentMixLines, advertiserCampaigns), [currentMixLines, advertiserCampaigns]);
-  const scopedCampaigns = advertiserCampaigns.filter((campaign) => passes(opsFilter, { ...campaign, campaignId: campaign.id }, campaignsById, lineSets));
+  const lineSets = useMemo(() => lineCampaignIds(currentMixLines, budgetCampaigns), [currentMixLines, budgetCampaigns]);
+  const scopedCampaigns = advertiserCampaigns.filter((campaign) => (showExcluded || !excludedIds.has(campaign.id)) && passes(opsFilter, { ...campaign, campaignId: campaign.id }, campaignsById, lineSets));
 
   // 네이버 SA 비즈머니 잔액
   const saIds = (selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => k.slice(9));
@@ -780,6 +879,13 @@ export default function Dashboard() {
         <div className="header-actions"><button className="secondary" onClick={() => setView("select")}>광고주 변경</button><button className="secondary" onClick={() => openInsight("market")}>🔎 시장 인사이트</button><button className="secondary" onClick={() => openInsight("insights")}>📊 광고인사이트</button><button className="secondary" onClick={() => setView("mapping")}>계정 매핑</button>{mode === "mock" && <div className="mode demo"><span />DEMO DATA</div>}</div>
       </header>
 
+      {recentResults.length > 0 && <div className="schedule-alert">
+        <b>⏰ 예약 실행 결과 (최근 24시간)</b>
+        <ul>{recentResults.map((x) => <li key={x.id} className={x.result!.ok ? "ok" : "fail"}>{x.result!.ok ? "✅" : "⚠️"} {ENTITY_LABEL[x.entityType]} '{x.name}' {x.status.toUpperCase()} {x.result!.ok ? "완료" : `실패: ${x.result!.error}`} <small>({new Date(x.result!.at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })})</small></li>)}</ul>
+        <button className="link-button" onClick={dismissAlerts}>확인</button>
+      </div>}
+      {scheduleTargets && <ScheduleDialog targets={scheduleTargets} existing={schedules} onClose={() => setScheduleTargets(null)} onSave={(date, status) => saveSchedules(scheduleTargets, date, status)} />}
+      {excludeTargets && <ExcludeDialog campaigns={excludeTargets} month={currentMonth} onClose={() => setExcludeTargets(null)} onSave={(scope) => excludeCampaigns(excludeTargets, scope)} />}
       <nav className="view-tabs" aria-label="화면 전환">
         {([["report", "대시보드"], ["ops", "매체별 데이터"], ["mapping", "믹스 매핑"], ["detail", "세부 성과분석"]] as Array<[DashTab, string]>).map(([key, label]) => <button key={key} className={dashTab === key || (key === "report" && dashTab === "mix") ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
         <span className={`storage-badge ${storageMode}`} title={storageError || undefined}>{storageMode === "supabase" ? "Supabase 저장" : storageMode === "local" ? "이 브라우저에만 저장" : "…"}</span>
@@ -793,9 +899,9 @@ export default function Dashboard() {
       {notice && <div className="toast">{notice}</div>}
       {staleKeys.length > 0 && <div className="stale-box"><b>조회되지 않는 계정이 매핑돼 있어요: {staleKeys.join(", ")}</b><span>매니저 계정 번호이거나 접근 권한이 없어진 계정입니다. <button className="link-button" onClick={() => setView("mapping")}>계정 매핑에서 정리하기</button></span></div>}
 
-      {dashTab === "report" && <ReportView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
-      {dashTab === "mix" && selectedAdvertiser && <MixView onOpenCampaign={goToCampaign} campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
-      {dashTab === "mapping" && selectedAdvertiser && <MixMappingView advertiserId={selectedAdvertiser.id} mixes={mixes} campaigns={advertiserCampaigns} onSave={saveMix} />}
+      {dashTab === "report" && <ReportView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns.filter((c) => !excludedIds.has(c.id))} excluded={advertiserCampaigns.filter((c) => excludedIds.has(c.id))} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
+      {dashTab === "mix" && selectedAdvertiser && <MixView onOpenCampaign={goToCampaign} campaigns={budgetCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
+      {dashTab === "mapping" && selectedAdvertiser && <MixMappingView advertiserId={selectedAdvertiser.id} mixes={mixes} campaigns={budgetCampaigns} onSave={saveMix} onExclude={(c) => setExcludeTargets([c])} excludedCount={excludedIds.size} />}
       {dashTab === "mix" && <button className="link-button back-link" onClick={() => setDashTab("report")}>← 대시보드로</button>}
       {dashTab === "detail" && <nav className="segmented" aria-label="세부 성과분석">
         {hasSa && <button className={detailTab === "sa" ? "active" : ""} onClick={() => setDetailTab("sa")}>SA 분석</button>}
@@ -818,15 +924,26 @@ export default function Dashboard() {
           <div className="campaign-filter">
             <input className="account-search" type="search" placeholder="캠페인·계정 이름으로 검색 (꺼진/종료 캠페인 포함)" value={campaignQuery} onChange={(e) => setCampaignQuery(e.target.value)} />
             <label className="toggle"><input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> 꺼짐/종료 포함</label>
+            {excludedIds.size > 0 && <label className="toggle"><input type="checkbox" checked={showExcluded} onChange={(e) => setShowExcluded(e.target.checked)} /> 예산 제외 {excludedIds.size}개 보기</label>}
           </div>
           {selection.size > 0 && <div className="bulk-bar">
             <b>{selection.size}개 선택</b>
             <button className="secondary" disabled={applying} onClick={() => void bulkStatus("on")}>ON</button>
             <button className="secondary" disabled={applying} onClick={() => void bulkStatus("off")}>OFF</button>
             <button className="secondary" disabled={applying} onClick={() => void bulkBudget()}>일예산 변경</button>
+            <button className="secondary" onClick={() => setScheduleTargets([...selection.values()].map((i) => ({ id: i.id, channel: i.channel, entityType: i.entityType, name: i.name })))}>⏰ ON/OFF 예약</button>
+            {[...selection.values()].some((i) => i.entityType === "campaign") && <button className="secondary" onClick={() => setExcludeTargets(advertiserCampaigns.filter((c) => selection.has(c.id)))}>예산에서 제외</button>}
             <button className="link-button" onClick={() => setSelection(new Map())}>선택 해제</button>
             {applying && <span className="viz-sub">적용 중…</span>}
           </div>}
+          {schedules.some((x) => !x.result) && <details className="schedule-list">
+            <summary>⏰ 예약 {schedules.filter((x) => !x.result).length}건</summary>
+            <ul>{schedules.filter((x) => !x.result).sort((a, b) => a.date.localeCompare(b.date)).map((x) => <li key={x.id}>
+              <span className={`status ${x.status}`}>{x.status.toUpperCase()}</span><b>{x.date}</b><span>{ENTITY_LABEL[x.entityType]} · {x.name}</span>
+              <small className="viz-sub">{x.status === "off" ? "전날 밤 11시대 실행" : "당일 0시대 실행"}</small>
+              <button className="link-button danger" onClick={() => void cancelSchedule(x.id)}>취소</button></li>)}</ul>
+          </details>}
+          {schedulesError && <small className="viz-sub">예약: {schedulesError}</small>}
           {loadError && <div className="connection-error"><b>실계정 연결 오류</b><span>{loadError}</span><small>Vercel 환경변수의 계정 ID, 토큰 및 권한을 확인해 주세요.</small></div>}
           <div className="table-wrap">
             <table className="campaign-table ops-table">
@@ -838,10 +955,10 @@ export default function Dashboard() {
                   <tr key={campaign.id} id={`row-${campaign.id}`} className={`${isRunning(campaign) ? "" : "inactive-row"} ${selectedCampaign?.id === campaign.id ? "open-row" : ""}`} onClick={() => selectedCampaign?.id === campaign.id ? setSelectedCampaign(null) : void openCampaign(campaign)}>
                     <td className="check-col" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selection.has(campaign.id)} onChange={(e) => toggleMany([{ id: campaign.id, channel: campaign.channel, entityType: "campaign", name: campaign.name }], e.target.checked)} /></td>
                     <td><span className={`channel ${campaign.channel}`}>{channelLabel[campaign.channel]}</span></td>
-                    <td><b>{selectedCampaign?.id === campaign.id ? "▾ " : "▸ "}{campaign.name}</b><small className="id">{campaign.accountName}{campaign.product ? ` · ${campaign.product}` : ""}</small></td>
+                    <td><b>{selectedCampaign?.id === campaign.id ? "▾ " : "▸ "}{campaign.name}</b>{excludedIds.has(campaign.id) && <span className="excluded-tag" title="예산·리포트 합계에서 빠져 있어요">예산 제외 <button className="link-button" onClick={(e) => { e.stopPropagation(); void includeCampaign(campaign.id); }}>해제</button></span>}<small className="id">{campaign.accountName}{campaign.product ? ` · ${campaign.product}` : ""}</small></td>
                     <td onClick={(e) => e.stopPropagation()}><BudgetButton value={campaign.dailyBudget} lifetime={campaign.lifetimeBudget} remaining={campaign.budgetRemaining} onSave={(v) => void applyOps([{ kind: "update_budget", channel: campaign.channel, entityType: "campaign", id: campaign.id, dailyBudget: v }])} /></td>
                     <td>{won.format(campaign.spend)}</td><td>{campaign.roas}%</td>
-                    <td onClick={(e) => e.stopPropagation()}><StatusButton status={campaign.status} label={campaign.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: next }])} /></td>
+                    <td onClick={(e) => e.stopPropagation()}><span className="status-cell"><StatusButton status={campaign.status} label={campaign.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: campaign.channel, entityType: "campaign", id: campaign.id, status: next }])} /><ScheduleBadge target={{ channel: campaign.channel, entityType: "campaign", id: campaign.id, name: campaign.name }} schedules={schedules} onOpen={(t) => setScheduleTargets([t])} /></span></td>
                   </tr>,
                   selectedCampaign?.id === campaign.id && <tr key={`${campaign.id}-detail`} className="detail-row"><td colSpan={7}>
                     {detailError && <div className="connection-error">{detailError}</div>}
@@ -853,12 +970,14 @@ export default function Dashboard() {
                         <button className="entity-name" onClick={() => adsByGroup[group.id] ? setAdsByGroup((cur) => { const next = { ...cur }; delete next[group.id]; return next; }) : void loadAds(group)}><b>{adsByGroup[group.id] ? "▾ " : "▸ "}{group.name}</b></button>
                         <BudgetButton value={group.dailyBudget} lifetime={group.lifetimeBudget} remaining={group.budgetRemaining} disabled={group.channel === "google_ads"} onSave={(v) => void applyOps([{ kind: "update_budget", channel: group.channel, entityType: "adgroup", id: group.id, dailyBudget: v }])} />
                         <StatusButton status={group.status} label={group.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: group.channel, entityType: "adgroup", id: group.id, status: next }])} />
+                        <ScheduleBadge target={{ channel: group.channel, entityType: "adgroup", id: group.id, name: group.name }} schedules={schedules} onOpen={(t) => setScheduleTargets([t])} />
                       </div>
                       {adsByGroup[group.id]?.map((ad) => <div className={`ad-row ${ad.active === false ? "inactive-row" : ""}`} key={ad.id}>
                         <input type="checkbox" checked={selection.has(ad.id)} onChange={(e) => toggleMany([{ id: ad.id, channel: ad.channel, entityType: "ad", name: ad.name }], e.target.checked)} />
                         {ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span className="ad-thumb empty" />}
                         <b>{ad.name}</b>
                         <StatusButton status={ad.status} label={ad.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: ad.channel, entityType: "ad", id: ad.id, status: next }])} />
+                        <ScheduleBadge target={{ channel: ad.channel, entityType: "ad", id: ad.id, name: ad.name }} schedules={schedules} onOpen={(t) => setScheduleTargets([t])} />
                       </div>)}
                     </div>)}</div>
                   </td></tr>,
