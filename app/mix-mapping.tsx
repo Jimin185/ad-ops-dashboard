@@ -190,15 +190,15 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         const share = spendSum > 0 ? c.spend / spendSum : 1 / targets.length;
         const next = Math.round(lineDaily * share / 100) * 100;
         const current = c.dailyBudget || 0;
-        const unsupported = c.channel === "google_ads";
         const exhausted = next < 100;
-        const warn = !unsupported && !exhausted && (next >= BIG || (current > 0 && next >= current * 10));
+        const warn = !exhausted && (next >= BIG || (current > 0 && next >= current * 10));
         rows.push({
           campaign: c, lineName: r.line.name, current, next, warn,
-          checked: !unsupported && !exhausted && next !== current,
-          note: unsupported ? "구글은 공유예산이라 미지원" : exhausted ? "남은 예산 없음 — OFF 검토" : next === current ? "현재와 동일" :
+          checked: !exhausted && next !== current,
+          note: exhausted ? "남은 예산 없음 — OFF 검토" : next === current ? "현재와 동일" :
             warn ? (next >= BIG ? `${won.format(BIG)} 이상 — 자릿수 확인!` : `현재의 ${Math.round(next / Math.max(current, 1))}배 — 확인 필요`) :
-            advice ? `${advice.period.from}~${advice.period.to}일 구간 · 남은 ${advice.daysLeft}일` : `남은 ${daysLeft}일 기준`,
+            (c.channel === "google_ads" ? "공유예산이면 적용 시 거절돼요 · " : "") +
+            (advice ? `${advice.period.from}~${advice.period.to}일 구간 · 남은 ${advice.daysLeft}일` : `남은 ${daysLeft}일 기준`),
         });
       }
     }
@@ -276,7 +276,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         <div className="table-wrap"><table className="campaign-table">
           <thead><tr><th /><th>라인</th><th>캠페인</th><th>현재 일예산</th><th>새 일예산</th><th>비고</th></tr></thead>
           <tbody>{plan.map((r, i) => <tr key={r.campaign.id} className={r.warn && r.checked ? "over" : ""}>
-            <td><input type="checkbox" checked={r.checked} disabled={r.note.includes("미지원")} onChange={(e) => setPlan(plan.map((x, j) => j === i ? { ...x, checked: e.target.checked } : x))} /></td>
+            <td><input type="checkbox" checked={r.checked} onChange={(e) => setPlan(plan.map((x, j) => j === i ? { ...x, checked: e.target.checked } : x))} /></td>
             <td>{r.lineName}</td>
             <td><span className={`channel ${r.campaign.channel}`}>{CHANNEL_LABEL[r.campaign.channel].replace("네이버 ", "")}</span> {r.campaign.name}</td>
             <td className="num">{r.current ? won.format(r.current) : "–"}</td>

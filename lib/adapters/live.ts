@@ -1193,7 +1193,17 @@ export const liveAdapter = {
       return { success: true, changed: 1 };
     }
     if (operation.channel === "google_ads") {
-      if (operation.kind === "update_budget") throw new Error("Google Ads 예산 변경은 공유 예산 확인 후 지원됩니다.");
+      if (operation.kind === "update_budget") {
+        if (operation.entityType !== "campaign") throw new Error("Google Ads는 캠페인 예산만 변경할 수 있어요.");
+        // 구글 예산은 campaign_budget 리소스라 여러 캠페인이 공유할 수 있다.
+        // 전용 예산일 때만 바꾸고, 공유 예산은 다른 캠페인까지 같이 바뀌므로 거절한다.
+        const rows = await googleSearch(key.account, `SELECT campaign.id, campaign_budget.resource_name, campaign_budget.explicitly_shared, campaign_budget.reference_count FROM campaign WHERE campaign.id = ${key.id}`);
+        const budget = rows?.[0]?.campaignBudget;
+        if (!budget?.resourceName) throw new Error("캠페인 예산을 찾지 못했어요.");
+        if (budget.explicitlyShared) throw new Error(`공유 예산이라 바꿀 수 없어요 (캠페인 ${Number(budget.referenceCount) || "여러 "}개가 함께 사용). 구글애즈에서 전용 예산으로 바꾸거나 공유 예산을 직접 수정해 주세요.`);
+        await googleRequest(`customers/${key.account}/campaignBudgets:mutate`, { operations: [{ update: { resourceName: budget.resourceName, amountMicros: String(Math.round(operation.dailyBudget) * 1_000_000) }, updateMask: "amountMicros" }] });
+        return { success: true, changed: 1 };
+      }
       const resource = operation.entityType === "campaign" ? "campaigns" : operation.entityType === "adgroup" ? "adGroups" : "adGroupAds";
       const field = operation.entityType === "ad" ? "adGroupAd" : operation.entityType;
       const resourceName = operation.entityType === "ad" ? `customers/${key.account}/adGroupAds/${key.id}` : `customers/${key.account}/${resource}/${key.id}`;
