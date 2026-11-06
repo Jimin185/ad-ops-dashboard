@@ -14,6 +14,7 @@ const SYSTEM = `광고 미디어 믹스 정리기입니다. 사용자가 붙여�
 - keywords: 아래 캠페인 이름들에 실제로 들어 있는 짧은 문자열 1~3개. 그 라인의 캠페인만 걸리도록 고르세요. 공백 무시, 대소문자 무시로 부분일치합니다.
 - excludes: 다른 라인 캠페인이 잘못 걸릴 때만 넣으세요.
 - 맞는 캠페인이 없으면 keywords는 빈 배열로 두세요. 지어내지 마세요.
+- source: 원본 믹스 표에서 이 라인 행의 칸들(열 이름과 값, 예: 아젠다·상품·기간·목적·타겟·소구점). 금액 열은 빼고 원본 표기 그대로, 최대 10개.
 - group: 믹스구분(시트 이름·캠페인 묶음·대분류 예: '27Y 학생방', '온크쇼'). 모르면 빈 문자열.
 - 월별 열이 여러 개인 믹스면 '대상 월' 금액만 쓰세요. 소계·합계·총계 행은 넣지 마세요. 대시보드에 없는 매체(버티컬 앱·카카오·NOSP·TV 등)는 빼세요.`;
 
@@ -27,6 +28,7 @@ const SCHEMA = {
         properties: {
           name: { type: "string" },
           group: { type: "string" },
+          source: { type: "array", items: { type: "object", properties: { column: { type: "string" }, value: { type: "string" } }, required: ["column", "value"], additionalProperties: false } },
           channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads", "all"] },
           budget: { type: "integer" },
           targetRoas: { type: "integer" },
@@ -48,7 +50,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as { text?: string; lines?: unknown[]; month?: string; campaigns?: Array<{ channel: string; name: string }> };
     const names = [...new Set((body.campaigns || []).map((c) => `${c.channel}|${String(c.name).slice(0, 60)}`))].slice(0, 400);
     const task = body.lines?.length
-      ? `아래 라인들의 keywords/excludes만 채워 같은 순서·같은 개수로 그대로 돌려주세요 (이름·믹스구분·채널·예산·ROAS·메모는 유지).\n${JSON.stringify(body.lines).slice(0, 20000)}`
+      ? `아래 라인들의 keywords/excludes만 채워 (source 는 그대로) 같은 순서·같은 개수로 그대로 돌려주세요 (이름·믹스구분·채널·예산·ROAS·메모는 유지).\n${JSON.stringify(body.lines).slice(0, 20000)}`
       : `대상 월: ${/^\d{4}-\d{2}$/.test(String(body.month)) ? body.month : "표에 있는 달"}\n붙여넣은 믹스:\n${String(body.text || "").slice(0, 30000)}`;
     if (!body.lines?.length && !String(body.text || "").trim()) return Response.json({ error: "붙여넣은 내용이 없습니다." }, { status: 400 });
 
