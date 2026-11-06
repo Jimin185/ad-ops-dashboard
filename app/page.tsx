@@ -558,12 +558,17 @@ export default function Dashboard() {
       && (!query || account.name.toLowerCase().includes(query) || account.id.includes(query)));
   }, [accounts, mappingTab, accountQuery]);
 
-  // 매핑돼 있지만 더 이상 계정 목록에 없는 계정 (예: 예전 버전에서 매니저 계정 번호를 매핑한 경우)
+  // 매핑돼 있지만 더 이상 계정 목록에 없는 계정 (예: 예전 버전에서 매니저 계정 번호를 매핑한 경우).
+  // 채널 조회 자체가 실패한 경우(토큰 만료·일시 오류)는 그 채널의 계정 상태를 알 수 없으므로 경고하지 않는다.
   const staleKeys = useMemo(() => {
     if (!selectedAdvertiser || !accounts.length) return [];
     const known = new Set(accounts.map((account) => `${account.channel}:${account.id}`));
-    return selectedAdvertiser.accountKeys.filter((key) => !known.has(key));
-  }, [selectedAdvertiser, accounts]);
+    const fetched = new Set(accounts.map((account) => account.channel));
+    return selectedAdvertiser.accountKeys.filter((key) => {
+      const channel = key.split(":")[0] as Channel;
+      return !known.has(key) && fetched.has(channel) && !accountErrors[channel];
+    });
+  }, [selectedAdvertiser, accounts, accountErrors]);
 
   function unmapKey(advertiserId: string, key: string) {
     setAdvertisers((current) => current.map((advertiser) => advertiser.id !== advertiserId ? advertiser : { ...advertiser, accountKeys: advertiser.accountKeys.filter((item) => item !== key) }));
