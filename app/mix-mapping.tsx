@@ -173,9 +173,22 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
   // ---- 예산 맞춰 일예산 일괄 세팅 ----
   // 라인의 남은 예산(기간 예산이 있으면 지금 구간 기준)을 남은 일수로 나눠 연결 캠페인에 배분한다.
   type BudgetRow = { campaign: Campaign; entityType: "campaign" | "adgroup"; targetId: string; targetName: string; lineName: string; current: number; next: number; checked: boolean; note: string; warn: boolean };
+  type PlanGroups = Map<string, Array<{ id: string; name: string; dailyBudget: number; lifetimeBudget?: number; active?: boolean; status: string }>>;
   const [plan, setPlan] = useState<BudgetRow[] | null>(null);
   const [applyBusy, setApplyBusy] = useState(false);
   const BIG = 500_000; // 일예산 경고 기준
+  // 매체별 마크업 %. 믹스 금액은 마크업 포함이므로 매체 집행액 = 금액 ÷ (1 + m/100).
+  const [markup, setMarkup] = useState<Record<string, number>>({});
+  const planGroupsRef = useRef<PlanGroups>(new Map());
+  useEffect(() => { try { setMarkup(JSON.parse(localStorage.getItem(`adops-markup:${advertiserId}`) || "{}")); } catch { setMarkup({}); } }, [advertiserId]);
+  /** 네이버 SA·GFA 하루예산 입력칸은 VAT 포함 기준 → 매체 집행액에 ×1.1 해서 넣는다 */
+  const vat = (channel: Channel) => channel === "naver_sa" || channel === "naver_gfa" ? 1.1 : 1;
+  function setMarkupRate(channel: Channel, value: number, rebuild: boolean) {
+    const next = { ...markup, [channel]: value };
+    setMarkup(next);
+    try { localStorage.setItem(`adops-markup:${advertiserId}`, JSON.stringify(next)); } catch { /* 저장 실패해도 계산은 됨 */ }
+    if (rebuild) computePlan(planGroupsRef.current, next);
+  }
 
   function rowOf(base: Omit<BudgetRow, "checked" | "note" | "warn">, extraNote = "", forceOff = ""): BudgetRow {
     const { current, next } = base;
@@ -189,15 +202,62 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
     };
   }
 
-  /** 캠페인 예산이 없는 캠페인(Meta ABO·GFA·네이버 그룹예산 운영)은 광고그룹 예산으로 내려가 배분한다 */
-  async function buildPlan() {
+  /**
+   * 믹스 금액(마크업 포함) → 매체 집행액 환산 후 배분한다.
+   * 캠페인 예산이 없는 캠페인(Meta ABO·GFA·네이버 그룹예산 운영)은 광고그룹 예산으로 내려간다.
+   */
+  function computePlan(groupsByCampaign: PlanGroups, rates = markup) {
+    const rate = (channel: Channel) => 1 + (Number(rates[channel]) || 0) / 100;
     const daysLeft = Math.max(1, dim - day + 1);
+    const rows: BudgetRow[] = [];
+    for (const r of results) {
+      if (!r.line.budget) continue;
+      // 매체 소진액을 믹스 단위(마크업 포함)로 환산해 남은 예산을 계산한다
+      const adjSpend = r.campaigns.reduce((s, c) => s + c.spend * rate(c.channel), 0);
+      const advice = periodAdvice(r.line, adjSpend, day);
+      const lineDaily = advice ? advice.daily : Math.max(0, r.line.budget - adjSpend) / daysLeft;
+      const targets = r.campaigns.filter(isRunning);
+      if (!targets.length) continue;
+      const baseNote = advice ? `${advice.period.from}~${advice.period.to}일 구간 · 남은 ${advice.daysLeft}일` : `남은 ${daysLeft}일 기준`;
+      // 배분: 이번 달 소진 비중대로, 소진이 없으면 균등
+      const spendSum = targets.reduce((s, c) => s + c.spend, 0);
+      for (const c of targets) {
+        const share = spendSum > 0 ? c.spend / spendSum : 1 / targets.length;
+        const m = Number(rates[c.channel]) || 0;
+        // 믹스 몫 → 마크업 제외(매체 집행액) → 네이버·GFA는 VAT 포함 입력(×1.1)
+        const campTarget = lineDaily * share / rate(c.channel) * vat(c.channel);
+        const convNote = [m ? `마크업 ${m}% 제외` : "", vat(c.channel) > 1 ? "VAT 포함 ×1.1" : ""].filter(Boolean).join(" · ");
+        const note = [convNote, baseNote].filter(Boolean).join(" · ");
+        const flat = c.channel === "naver_sa" && (c.product || "").includes("브랜드");
+        if (flat) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "브랜드검색은 정액제 — 일예산 없음")); continue; }
+        const groups = groupsByCampaign.get(c.id);
+        if (!c.dailyBudget && c.channel !== "google_ads") {
+          // 캠페인 예산 없음 → 광고그룹(광고세트) 예산으로 배분: 기존 그룹예산 비중대로, 없으면 균등
+          const act = (groups || []).filter((g) => g.active ?? g.status === "on");
+          const usable = act.length ? act : groups || [];
+          if (!usable.length) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "캠페인 예산이 없고 광고그룹도 못 찾음 — 수동 확인")); continue; }
+          const bsum = usable.reduce((s, g) => s + (g.dailyBudget || 0), 0);
+          for (const g of usable) {
+            const gshare = bsum > 0 ? (g.dailyBudget || 0) / bsum : 1 / usable.length;
+            const next = Math.round(campTarget * gshare / 100) * 100;
+            const lifetime = g.lifetimeBudget ? "총예산(기간) 사용 그룹 — 수동 확인" : "";
+            rows.push(rowOf({ campaign: c, entityType: "adgroup", targetId: g.id, targetName: `${c.name} › ${g.name}`, lineName: r.line.name, current: g.dailyBudget || 0, next }, ["그룹예산 운영", note].filter(Boolean).join(" · "), lifetime));
+          }
+        } else {
+          rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 },
+            (c.channel === "google_ads" ? "공유예산이면 적용 시 거절돼요 · " : "") + note));
+        }
+      }
+    }
+    if (!rows.length) { setNotice("일예산을 계산할 라인이 없어요. 예산이 있는 라인에 운영 중 캠페인을 연결해 주세요."); return; }
+    setPlan(rows.sort((a, b) => Number(b.checked) - Number(a.checked) || b.next - a.next));
+  }
+  async function buildPlan() {
     setBusy("예산 단위(캠페인/광고그룹)를 확인하는 중…");
     try {
-      const rows: BudgetRow[] = [];
       // 캠페인 예산이 없는 캠페인들의 광고그룹을 미리 받아 둔다
       const needGroups = results.flatMap((r) => r.line.budget ? r.campaigns.filter((c) => isRunning(c) && !c.dailyBudget && c.channel !== "google_ads") : []);
-      const groupsByCampaign = new Map<string, Array<{ id: string; name: string; dailyBudget: number; lifetimeBudget?: number; active?: boolean; status: string }>>();
+      const groupsByCampaign: PlanGroups = new Map();
       await Promise.all([...new Map(needGroups.map((c) => [c.id, c])).values()].map(async (c) => {
         try {
           const res = await (apiFetch || fetch)(`/api/entities?channel=${c.channel}&campaignId=${encodeURIComponent(c.id)}`);
@@ -205,41 +265,8 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
           if (res.ok) groupsByCampaign.set(c.id, data.adgroups || []);
         } catch { /* 이 캠페인은 캠페인 단위로 시도 */ }
       }));
-      for (const r of results) {
-        if (!r.line.budget) continue;
-        const advice = periodAdvice(r.line, r.spend, day);
-        const lineDaily = advice ? advice.daily : Math.max(0, r.line.budget - r.spend) / daysLeft;
-        const targets = r.campaigns.filter(isRunning);
-        if (!targets.length) continue;
-        const baseNote = advice ? `${advice.period.from}~${advice.period.to}일 구간 · 남은 ${advice.daysLeft}일` : `남은 ${daysLeft}일 기준`;
-        // 배분: 이번 달 소진 비중대로, 소진이 없으면 균등
-        const spendSum = targets.reduce((s, c) => s + c.spend, 0);
-        for (const c of targets) {
-          const share = spendSum > 0 ? c.spend / spendSum : 1 / targets.length;
-          const campTarget = lineDaily * share;
-          const flat = c.channel === "naver_sa" && (c.product || "").includes("브랜드");
-          if (flat) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 }, "", "브랜드검색은 정액제 — 일예산 없음")); continue; }
-          const groups = groupsByCampaign.get(c.id);
-          if (!c.dailyBudget && c.channel !== "google_ads") {
-            // 캠페인 예산 없음 → 광고그룹(광고세트) 예산으로 배분: 기존 그룹예산 비중대로, 없으면 균등
-            const act = (groups || []).filter((g) => g.active ?? g.status === "on");
-            const usable = act.length ? act : groups || [];
-            if (!usable.length) { rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: 0, next: Math.round(campTarget / 100) * 100 }, "", "캠페인 예산이 없고 광고그룹도 못 찾음 — 수동 확인")); continue; }
-            const bsum = usable.reduce((s, g) => s + (g.dailyBudget || 0), 0);
-            for (const g of usable) {
-              const gshare = bsum > 0 ? (g.dailyBudget || 0) / bsum : 1 / usable.length;
-              const next = Math.round(campTarget * gshare / 100) * 100;
-              const lifetime = g.lifetimeBudget ? "총예산(기간) 사용 그룹 — 수동 확인" : "";
-              rows.push(rowOf({ campaign: c, entityType: "adgroup", targetId: g.id, targetName: `${c.name} › ${g.name}`, lineName: r.line.name, current: g.dailyBudget || 0, next }, `그룹예산 운영 · ${baseNote}`, lifetime));
-            }
-          } else {
-            rows.push(rowOf({ campaign: c, entityType: "campaign", targetId: c.id, targetName: c.name, lineName: r.line.name, current: c.dailyBudget || 0, next: Math.round(campTarget / 100) * 100 },
-              (c.channel === "google_ads" ? "공유예산이면 적용 시 거절돼요 · " : "") + baseNote));
-          }
-        }
-      }
-      if (!rows.length) { setNotice("일예산을 계산할 라인이 없어요. 예산이 있는 라인에 운영 중 캠페인을 연결해 주세요."); return; }
-      setPlan(rows.sort((a, b) => Number(b.checked) - Number(a.checked) || b.next - a.next));
+      planGroupsRef.current = groupsByCampaign;
+      computePlan(groupsByCampaign);
     } finally { setBusy(""); }
   }
   async function applyPlan() {
@@ -308,7 +335,16 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
       {plan && <article className="viz-card map-import">
         <div className="viz-head">
           <span className="viz-title">일예산 맞추기 · {month}</span>
-          <span className="viz-sub">라인의 남은 예산 ÷ 남은 일수를 소진 비중대로 배분했어요. 금액은 바꿀 수 있고, 체크된 것만 적용돼요.</span>
+          <span className="viz-sub">믹스 금액 ÷ (1+마크업) = 매체 집행액으로 환산해 남은 예산 ÷ 남은 일수를 소진 비중대로 배분해요. 네이버 SA·GFA는 예산칸이 VAT 포함이라 ×1.1 해서 넣어요. 금액은 바꿀 수 있고, 체크된 것만 적용돼요.</span>
+        </div>
+        <div className="mix-actions" style={{ alignItems: "center", gap: 10 }}>
+          <span className="viz-sub">매체별 마크업 %</span>
+          {(["naver_sa", "naver_gfa", "meta", "google_ads"] as Channel[]).map((ch) => <label key={ch} className="viz-sub" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            {CHANNEL_LABEL[ch].replace("네이버 ", "")}
+            <input className="note-input num" style={{ width: "3.5em", textAlign: "right" }} inputMode="decimal" value={markup[ch] ?? 0}
+              onChange={(e) => setMarkupRate(ch, Math.max(0, Math.min(100, Number(e.target.value.replace(/[^0-9.]/g, "")) || 0)), true)} />%
+          </label>)}
+          <span className="viz-sub">(한 번 넣으면 저장돼요 · 바꾸면 표가 다시 계산돼요)</span>
         </div>
         <div className="table-wrap"><table className="campaign-table">
           <thead><tr><th /><th>라인</th><th>캠페인</th><th>현재 일예산</th><th>새 일예산</th><th>비고</th></tr></thead>
