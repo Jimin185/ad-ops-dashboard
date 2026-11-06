@@ -29,9 +29,13 @@ async function jsonFetch(url: string, init?: RequestInit) {
   try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
   if (!response.ok) {
     const detail = body?.error?.details?.flatMap((item: any) => item?.errors || [])?.[0];
-    const message = detail?.message || detail?.errorCode && JSON.stringify(detail.errorCode) || body?.error?.message || body?.message || body?.title || body?.detail || `${response.status} ${response.statusText}`;
+    let message = detail?.message || detail?.errorCode && JSON.stringify(detail.errorCode) || body?.error?.message || body?.message || body?.title || body?.detail || `${response.status} ${response.statusText}`;
+    // Meta는 사람이 읽을 사유를 별도 필드에 담아 준다 (예: 최소 예산 미달, 권한 부족). 있으면 붙인다.
+    const userMsg = [body?.error?.error_user_title, body?.error?.error_user_msg].filter(Boolean).join(" — ");
+    if (userMsg && !String(message).includes(userMsg)) message = `${message} · ${userMsg}`;
     const code = body?.code ?? body?.error?.code;
-    if (code !== undefined && !String(message).includes(String(code))) throw new Error(`${message} (code ${code}, HTTP ${response.status})`);
+    const sub = body?.error?.error_subcode ? `, subcode ${body.error.error_subcode}` : "";
+    if (code !== undefined && !String(message).includes(String(code))) throw new Error(`${message} (code ${code}${sub}, HTTP ${response.status})`);
     throw new Error(message);
   }
   return body;
