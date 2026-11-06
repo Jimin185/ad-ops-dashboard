@@ -43,6 +43,7 @@ export async function POST(request: Request) {
 }
 
 async function handle(request: Request) {
+  let freeFallback: ((note: string) => Promise<Response | null>) | null = null;
   try {
     const started = Date.now();
     const body = (await request.json()) as { mode?: "auto" | "claude"; continuation?: Continuation; attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
@@ -60,8 +61,16 @@ async function handle(request: Request) {
       if (free.kind === "answer") return Response.json({ message: free.text, pendingActions: [], mixDrafts: [], usage: free.usage, model: free.label });
       escalated = free.reason;
     }
+    // Claude를 쓸 수 없으면(키 없음·한도 초과) 무료 모델이 계산·안내까지만 하고 답한다.
+    const freeOnly = async (note: string) => {
+      const r = await runFreeAssistant(history, screenLine, ctx, request.signal, Math.min(Date.now() + 40_000, started + 55_000), false).catch(() => null);
+      if (r?.kind === "answer") return Response.json({ message: `${r.text}\n\n_${note}_`, pendingActions: [], mixDrafts: [], usage: r.usage, model: r.label });
+      return null;
+    };
+    if (!cont && freeLlmConfig()) freeFallback = freeOnly;
     if (!process.env.ANTHROPIC_API_KEY) {
-      return Response.json({ error: escalated ? `이 요청은 Claude가 처리해야 하는데 Claude API 키가 없습니다. (${escalated})` : "API 키 등록 필요", code: "ANTHROPIC_API_KEY_REQUIRED" }, { status: 503 });
+      if (!cont && freeLlmConfig()) { const r = await freeOnly("변경 실행은 Claude 키가 없어 안내만 드렸어요."); if (r) return r; }
+      return Response.json({ error: "API 키 등록 필요", code: "ANTHROPIC_API_KEY_REQUIRED" }, { status: 503 });
     }
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const messages: Anthropic.Beta.BetaMessageParam[] = cont?.messages?.length ? cont.messages : history.map((message) => ({ role: message.role, content: message.content }));
@@ -136,6 +145,10 @@ async function handle(request: Request) {
   } catch (error) {
     if (request.signal.aborted || error instanceof Anthropic.APIUserAbortError) return new Response(null, { status: 499 });
     if (error instanceof Anthropic.AuthenticationError) return Response.json({ error: "Claude API 키가 유효하지 않습니다. Vercel의 ANTHROPIC_API_KEY를 새 키로 교체해 주세요." }, { status: 503 });
+    if (/credit|billing|quota|rate.?limit/i.test(error instanceof Error ? error.message : "") && freeLlmConfig() && freeFallback) {
+      const r = await freeFallback("Claude 사용 한도에 도달해 무료 모델이 계산·안내만 드렸어요. 변경은 캠페인 표 버튼으로 적용해 주세요.").catch(() => null);
+      if (r) return r;
+    }
     return Response.json({ error: friendlyError(error) }, { status: 500 });
   }
 }

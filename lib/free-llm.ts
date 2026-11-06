@@ -29,22 +29,26 @@ function cleanSchema(schema: any): any {
 
 const TOOLS = [
   ...(assistantTools as unknown as any[]).filter((t) => READ_TOOLS.has(t.name)).map((t) => ({ type: "function", function: { name: t.name, description: String(t.description || "").slice(0, 1000), parameters: cleanSchema(t.input_schema) } })),
-  { type: "function", function: { name: "escalate_to_claude", description: "사용자가 광고를 바꾸는 작업(예산 변경, ON/OFF, 캠페인·광고·소재 생성/복제/수정, 믹스 초안 저장, 예산 조정안)을 요청했거나, 조회 도구로는 답할 수 없는 복잡한 분석이면 호출하세요. 직접 바꾸려 하지 말고 이 도구만 호출합니다.", parameters: { type: "object", properties: { reason: { type: "string", description: "넘기는 이유 한 줄" } }, required: ["reason"] } } },
+  { type: "function", function: { name: "escalate_to_claude", description: "사용자가 광고를 '실제로 바꿔 달라'고 할 때만 호출하세요(예: '일예산 30만원으로 바꿔줘', '꺼줘', '캠페인 만들어줘', '믹스 초안 저장해줘'). '얼마로 바꿔야 해?', '얼마 써야 해?', '계산해줘'처럼 숫자·방법을 묻는 질문은 직접 조회·계산해서 답하고 이 도구는 쓰지 마세요.", parameters: { type: "object", properties: { reason: { type: "string", description: "넘기는 이유 한 줄" } }, required: ["reason"] } } },
 ];
 
-const SYSTEM = `당신은 광고대행사 대시보드의 "조회 전용" 어시스턴트입니다. 채널: 네이버 SA(naver_sa), 네이버 GFA(naver_gfa), Meta(meta), Google Ads(google_ads).
+const SYSTEM = `당신은 광고대행사 대시보드의 어시스턴트입니다. 채널: 네이버 SA(naver_sa), 네이버 GFA(naver_gfa), Meta(meta), Google Ads(google_ads).
 - 성과·캠페인·믹스·시장 질문은 도구로 실제 데이터를 조회해 답하세요. 숫자를 지어내지 마세요.
-- 당신은 광고를 바꿀 수 없습니다. 예산 변경, ON/OFF, 생성·복제·수정, 믹스 초안 저장, 예산 조정안 요청이면 escalate_to_claude 를 호출하세요.
+- 예산 계산·일예산 추천·소진 페이스 같은 질문은 직접 조회하고 계산해서 답하세요. 계산 과정(이번 달 누적 광고비, 남은 금액, 남은 일수)을 짧게 보여주세요.
+- 믹스·목표 금액은 보통 '마크업 포함'입니다. 마크업 m%면 매체 집행액 = 금액 ÷ (1 + m/100). 일예산은 매체 집행액 기준으로 계산합니다(예: 600만 원, 마크업 14% → 매체 집행 약 526만 원).
+- 남은 일수는 [현재 화면] 줄의 오늘 날짜를 포함해 이번 달 말일까지로 계산하세요.
+- 당신은 광고를 직접 바꿀 수 없습니다. 사용자가 '바꿔줘·꺼줘·만들어줘'처럼 실행을 요청할 때만 escalate_to_claude 를 호출하세요.
 - 금액은 KRW, ROAS = 매출÷광고비×100(%). 답은 간결한 한국어, 비교는 마크다운 표로.
 - 마지막 [현재 화면] 줄의 광고주 기준으로 답하세요.`;
+const NO_ESCALATE = `\n- 지금은 변경을 실행할 수 있는 모델이 없습니다. 변경 요청이면 바꿀 값과 이유를 계산해 알려주고, 대시보드 캠페인 표의 일예산·ON/OFF 버튼으로 직접 적용하라고 안내하세요.`;
 
 type Msg = { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_calls?: any[]; tool_call_id?: string };
 
-export async function runFreeAssistant(history: Array<{ role: "user" | "assistant"; content: string }>, screenLine: string, ctx: AssistantContext, signal: AbortSignal, deadlineMs: number):
+export async function runFreeAssistant(history: Array<{ role: "user" | "assistant"; content: string }>, screenLine: string, ctx: AssistantContext, signal: AbortSignal, deadlineMs: number, allowEscalate = true):
   Promise<{ kind: "answer"; text: string; usage: { input: number; output: number; cached: number }; label: string } | { kind: "escalate"; reason: string }> {
   const cfg = freeLlmConfig();
   if (!cfg) return { kind: "escalate", reason: "무료 모델 키 없음" };
-  const messages: Msg[] = [{ role: "system", content: SYSTEM }, ...history.map((m) => ({ role: m.role, content: m.content })), { role: "user", content: screenLine }];
+  const messages: Msg[] = [{ role: "system", content: SYSTEM + (allowEscalate ? "" : NO_ESCALATE) }, ...history.map((m) => ({ role: m.role, content: m.content })), { role: "user", content: screenLine }];
   const usage = { input: 0, output: 0, cached: 0 };
   for (let step = 0; step < 8; step++) {
     if (Date.now() > deadlineMs) return { kind: "escalate", reason: "무료 모델 시간 초과" };
@@ -54,7 +58,7 @@ export async function runFreeAssistant(history: Array<{ role: "user" | "assistan
       res = await fetch(`${cfg.base}/chat/completions`, {
         method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(5_000, Math.min(20_000, deadlineMs - Date.now())))]),
         headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages, tools: TOOLS, tool_choice: "auto", temperature: 0.2 }),
+        body: JSON.stringify({ model, messages, tools: allowEscalate ? TOOLS : TOOLS.filter((t) => t.function.name !== "escalate_to_claude"), tool_choice: "auto", temperature: 0.2 }),
       }).catch(() => null);
       text = res ? await res.text() : "";
       if (res && ![429, 500, 503].includes(res.status)) break;
