@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Advertiser, MediaMix } from "@/lib/mix";
 import { lineGroups, matchMix, mixTotalBudget } from "@/lib/mix";
+import { KPI_OPTIONS } from "@/lib/kpi";
 import { ReportView } from "./report-view";
 import { MixView } from "./mix-view";
 import { MixMappingView } from "./mix-mapping";
@@ -215,6 +216,14 @@ export default function Dashboard() {
   const [detailError, setDetailError] = useState("");
   const [mappingTab, setMappingTab] = useState<"all" | Channel>("all");
   const [accountQuery, setAccountQuery] = useState("");
+  // 계정별 전환 기준(KPI). 저장소(Supabase)에 전역 저장되고, 조회 경로에 1분 내 반영된다.
+  const [kpiPrefsMap, setKpiPrefsMap] = useState<Record<string, string>>({});
+  useEffect(() => { fetch("/api/kpi").then((r) => r.json()).then((d) => setKpiPrefsMap(d.prefs || {})).catch(() => {}); }, []);
+  async function saveKpi(accountKey: string, metric: string) {
+    setKpiPrefsMap((cur) => ({ ...cur, [accountKey]: metric }));
+    const response = await fetch("/api/kpi", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountKey, metric }) });
+    if (!response.ok) window.alert((await response.json().catch(() => ({})) as any).error || "전환 기준을 저장하지 못했습니다.");
+  }
   const [registeredSa, setRegisteredSa] = useState<RegisteredNaverSa[]>([]);
   const [saForm, setSaForm] = useState({ name: "", customerId: "", apiKey: "", secretKey: "" });
   const [saStatus, setSaStatus] = useState<{ state: "idle" | "saving" | "error" | "done"; message: string }>({ state: "idle", message: "" });
@@ -834,7 +843,7 @@ export default function Dashboard() {
 
   if (view === "mapping") return (
     <main>
-      <header><div><span className="eyebrow">ADMIN · ACCOUNT MAPPING</span><h1>광고계정 매핑</h1><p>매체별 관리자 계정에서 발견된 광고계정을 광고주에 연결합니다. 다른 광고주에 연결된 계정은 선택할 수 없습니다.</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
+      <header><div><span className="eyebrow">ADMIN · ACCOUNT MAPPING</span><h1>광고계정 매핑</h1><p>매체별 관리자 계정에서 발견된 광고계정을 광고주에 연결합니다. 다른 광고주에 연결된 계정은 선택할 수 없습니다. 매핑된 Meta·GFA 계정은 전환 기준(구매·장바구니·회원가입 등)을 골라 모든 화면의 전환·ROAS에 반영할 수 있어요 (저장 후 1분 내 반영, 소재 성과는 "지금 새로 가져오기" 필요).</p></div><button className="secondary" onClick={() => setView("select")}>광고주 선택으로</button></header>
       <section className="mapping-panel">
         <div className="mapping-toolbar"><select value={selectedAdvertiserId} onChange={(event) => setSelectedAdvertiserId(event.target.value)}><option value="">광고주 선택</option>{advertisers.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.accountKeys.length})</option>)}</select><button className="secondary" onClick={createAdvertiser}>+ 광고주</button></div>
 
@@ -874,6 +883,12 @@ export default function Dashboard() {
             <span className={`channel ${account.channel}`}>{channelLabel[account.channel]}</span>
             <b>{account.name}{mappedElsewhere && <em className="owner-tag">{owner!.name}에 매핑됨</em>}</b>
             <small>{account.id}</small>
+            {checked && KPI_OPTIONS[account.channel] && <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }} style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <small>전환 기준</small>
+              <select className="mini-select" value={kpiPrefsMap[key] || KPI_OPTIONS[account.channel][0].id} onChange={(e) => void saveKpi(key, e.target.value)}>
+                {KPI_OPTIONS[account.channel].map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+              </select>
+            </span>}
           </label>;
         })}</div>
         {!visibleAccounts.length && <div className="empty-state"><b>{accountQuery ? "검색 결과가 없습니다." : mappingTab === "naver_sa" ? "등록된 네이버 SA 계정이 없습니다." : "발견된 광고계정이 없습니다."}</b><span>{accountQuery ? "다른 이름이나 ID로 검색해 보세요." : mappingTab === "naver_sa" ? "위에서 계정을 등록해 주세요." : "연결 상태의 오류와 환경변수를 확인해 주세요."}</span></div>}

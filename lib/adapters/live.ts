@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { cacheGet, cacheGetStale, cacheSet, isFinalDate, nextDailyRefresh } from "@/lib/cache";
+import { kvGet, storageAvailable } from "@/lib/db";
+import { META_KPI_ACTIONS } from "@/lib/kpi";
 import { registeredNaverSa } from "@/lib/naver-sa-registry";
 import type { Ad, AdAccount, AdGroup, Campaign, Channel, ChangeOperation, ConnectionStatus, CreativeRow, DailyRow, EntityStatus, EntityType, ReportResult, StatsRow } from "@/lib/types";
 
@@ -200,14 +202,15 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const { since, until } = monthRange();
   return settleAccounts(accounts, async (account) => {
     const offset = await metaBudgetOffset(account.id);
+    const kpiTypes = await metaKpiTypes(account.id);
     const body = await metaGet(`act_${account.id}/campaigns`, {
       fields: `id,name,status,effective_status,stop_time,objective,daily_budget,lifetime_budget,budget_remaining,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values,catalog_segment_actions,catalog_segment_value}`,
       limit: "500",
     });
     return (body.data || []).filter((row: any) => includeOff || row.status === "ACTIVE").map((row: any) => {
       const insight = row.insights?.data?.[0] || {};
-      const purchase = { value: metaConv(insight) };
-      const revenue = { value: metaRev(insight) };
+      const purchase = { value: metaConv(insight, kpiTypes) };
+      const revenue = { value: metaRev(insight, kpiTypes) };
       const spend = num(insight.spend);
       return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / offset,
         ...(num(row.lifetime_budget) ? { lifetimeBudget: num(row.lifetime_budget) / offset, budgetRemaining: num(row.budget_remaining) / offset } : {}),
@@ -444,7 +447,8 @@ async function gfaAccountCampaigns(account: AdAccount, includeOff: boolean, stri
     const adSetCampaigns = new Set([...perfSets, ...convSets].map((row) => String(row.campaignNo ?? "")));
     for (const row of perfSets) bucket(row.campaignNo).spend += num(row.sales);
     for (const row of perfCamps) if (!adSetCampaigns.has(String(row.campaignNo ?? ""))) bucket(row.campaignNo).spend += num(row.sales);
-    const addConv = (row: any) => { if (row.convType === "PURCHASE") { const b = bucket(row.campaignNo); b.conversions += num(row.convCount); b.revenue += num(row.convSales); } };
+    const wantedConv = await gfaKpiType(account.id);
+    const addConv = (row: any) => { if (gfaConvHit(row, wantedConv)) { const b = bucket(row.campaignNo); b.conversions += num(row.convCount); b.revenue += num(row.convSales); } };
     convSets.forEach(addConv);
     convCamps.filter((row) => !adSetCampaigns.has(String(row.campaignNo ?? ""))).forEach(addConv);
     return campaigns.map((row) => {
@@ -477,8 +481,22 @@ async function googleDaily(accountId: string, since: string, until: string): Pro
 const META_PURCHASE = ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"];
 // 협력광고(카탈로그 공유) 계정은 구매가 catalog_segment_* 에 잡힌다. 어떤 계정이 협력광고인지 모르므로 항상 둘을 더한다.
 const META_CATALOG_FIELDS = "catalog_segment_actions,catalog_segment_value";
-const metaConv = (row: any) => metaPick(row?.actions) + metaPick(row?.catalog_segment_actions);
-const metaRev = (row: any) => metaPick(row?.action_values) + metaPick(row?.catalog_segment_value);
+// ---- 계정별 전환 기준(KPI): adops_cache 의 kpi_prefs ("채널:계정" → metric). 60초 메모리 캐시 ----
+let kpiMemo: { at: number; map: Record<string, string> } | null = null;
+async function kpiPrefs(): Promise<Record<string, string>> {
+  if (kpiMemo && Date.now() - kpiMemo.at < 60_000) return kpiMemo.map;
+  let map: Record<string, string> = {};
+  try { if (storageAvailable()) map = (await kvGet<Record<string, string>>("kpi_prefs")) || {}; } catch { /* 저장소 없으면 기본값 */ }
+  kpiMemo = { at: Date.now(), map };
+  return map;
+}
+export async function kpiMetricOf(channel: Channel, accountId: string) { return (await kpiPrefs())[`${channel}:${accountId}`]; }
+const metaKpiTypes = async (accountId: string) => META_KPI_ACTIONS[(await kpiPrefs())[`meta:${accountId}`] || "purchase"] || META_KPI_ACTIONS.purchase;
+const gfaKpiType = async (accountId: string) => (await kpiPrefs())[`naver_gfa:${accountId}`] || "PURCHASE";
+const gfaConvHit = (row: any, wanted: string) => wanted === "ALL" || row.convType === wanted;
+
+const metaConv = (row: any, types: string[] = META_KPI_ACTIONS.purchase) => metaPick(row?.actions, types) + metaPick(row?.catalog_segment_actions, types);
+const metaRev = (row: any, types: string[] = META_KPI_ACTIONS.purchase) => metaPick(row?.action_values, types) + metaPick(row?.catalog_segment_value, types);
 /** catalog_segment 필드를 못 받는 계정이면 빼고 다시 요청한다. */
 async function metaInsightsSafe(path: string, params: Record<string, string>) {
   try { return await metaPaged(path, params); }
@@ -487,15 +505,16 @@ async function metaInsightsSafe(path: string, params: Record<string, string>) {
     return metaPaged(path, { ...params, fields: params.fields.replace(/,?catalog_segment_(actions|value)/g, "") });
   }
 }
-const metaPick = (list: any[] | undefined) => {
+const metaPick = (list: any[] | undefined, types: string[] = META_PURCHASE) => {
   const items = list || [];
-  for (const type of META_PURCHASE) { const hit = items.find((x: any) => x.action_type === type); if (hit) return num(hit.value); }
+  for (const type of types) { const hit = items.find((x: any) => x.action_type === type); if (hit) return num(hit.value); }
   return 0;
 };
 async function metaDaily(accountId: string, since: string, until: string): Promise<DailyRow[]> {
+  const kpiTypes = await metaKpiTypes(accountId);
   const rows = await metaInsightsSafe(`act_${accountId}/insights`, { level: "account", time_increment: "1", time_range: JSON.stringify({ since, until }), fields: `spend,impressions,clicks,actions,action_values,${META_CATALOG_FIELDS}` });
-  return rows.map((row: any) => ({ date: row.date_start, channel: "meta" as const, accountId, spend: num(row.spend), revenue: metaRev(row),
-    conversions: metaConv(row), impressions: num(row.impressions), clicks: num(row.clicks) }));
+  return rows.map((row: any) => ({ date: row.date_start, channel: "meta" as const, accountId, spend: num(row.spend), revenue: metaRev(row, kpiTypes),
+    conversions: metaConv(row, kpiTypes), impressions: num(row.impressions), clicks: num(row.clicks) }));
 }
 
 function gfaClampRange(since: string, until: string) {
@@ -516,7 +535,8 @@ async function gfaDaily(accountId: string, since: string, until: string): Promis
   const days = new Map<string, DailyRow>();
   const day = (date: string) => { if (!days.has(date)) days.set(date, blankDay(date, "naver_gfa", accountId)); return days.get(date)!; };
   const addPerf = (row: any) => { const d = day(row.targetDate); d.spend += num(row.sales); d.impressions += num(row.impCount); d.clicks += num(row.clickCount); };
-  const addConv = (row: any) => { if (row.convType === "PURCHASE") { const d = day(row.targetDate); d.conversions += num(row.convCount); d.revenue += num(row.convSales); } };
+  const wantedConv = await gfaKpiType(accountId);
+  const addConv = (row: any) => { if (gfaConvHit(row, wantedConv)) { const d = day(row.targetDate); d.conversions += num(row.convCount); d.revenue += num(row.convSales); } };
   perfSets.forEach(addPerf); perfCamps.filter((row) => !adSetCampaigns.has(String(row.campaignNo ?? ""))).forEach(addPerf);
   convSets.forEach(addConv); convCamps.filter((row) => !adSetCampaigns.has(String(row.campaignNo ?? ""))).forEach(addConv);
   return [...days.values()];
@@ -615,6 +635,7 @@ export { eachDate };
 
 // ---- 소재 성과 ----
 async function metaCreatives(accountId: string, since: string, until: string): Promise<CreativeRow[]> {
+  const kpiTypes = await metaKpiTypes(accountId);
   const insights = await metaInsightsSafe(`act_${accountId}/insights`, {
     level: "ad", time_range: JSON.stringify({ since, until }),
     fields: `ad_id,ad_name,adset_name,campaign_id,campaign_name,spend,impressions,clicks,actions,action_values,${META_CATALOG_FIELDS}`,
@@ -634,7 +655,7 @@ async function metaCreatives(accountId: string, since: string, until: string): P
       imageUrl: creative.image_url || link.picture || link.image_url || creative.thumbnail_url, landingUrl: link.link || link.call_to_action?.value?.link,
       headline: creative.title || link.name || link.title, body: creative.body || link.message,
       status: details[row.ad_id]?.effective_status, spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
-      conversions: metaConv(row), revenue: metaRev(row) };
+      conversions: metaConv(row, kpiTypes), revenue: metaRev(row, kpiTypes) };
   });
 }
 
@@ -651,7 +672,8 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
   const stats = new Map<string, { spend: number; impressions: number; clicks: number; conversions: number; revenue: number; campaignNo: string; adSetNo: string }>();
   const stat = (row: any) => { const key = String(row.creativeNo ?? row.adNo ?? ""); if (!stats.has(key)) stats.set(key, { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, campaignNo: String(row.campaignNo ?? ""), adSetNo: String(row.adSetNo ?? "") }); return stats.get(key)!; };
   for (const row of perf) { const st = stat(row); st.spend += num(row.sales); st.impressions += num(row.impCount); st.clicks += num(row.clickCount); }
-  for (const row of conv) if (row.convType === "PURCHASE") { const st = stat(row); st.conversions += num(row.convCount); st.revenue += num(row.convSales); }
+  const wantedConv = await gfaKpiType(accountId);
+  for (const row of conv) if (gfaConvHit(row, wantedConv)) { const st = stat(row); st.conversions += num(row.convCount); st.revenue += num(row.convSales); }
   const top = [...stats.entries()].filter(([, v]) => v.spend > 0).sort((a, b) => b[1].spend - a[1].spend).slice(0, 60);
   // 이미지는 소재 상세 API에는 없고 소재 목록 API에만 있다. 전체 목록(수천 개)은 느리므로 상위 소재가 속한 광고세트별로만 목록을 받는다.
   const detailKey = `gfa-creative-detail:v2:${accountId}`;
@@ -722,8 +744,9 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
   const pendingAccounts: string[] = [];
   const timeLimit = <T,>(promise: Promise<T>, ms: number) => Promise.race([promise, new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), ms))]);
   const rows = (await Promise.all(targets.map(async (t) => {
-    // 지난 주 이전 기간은 영구 적재, 그 외는 하루 한 번 갱신
-    const key = `creative:v3:${t.channel}:${t.accountId}:${since}:${until}`;
+    // 지난 주 이전 기간은 영구 적재, 그 외는 하루 한 번 갱신. 전환 기준(KPI)이 바뀌면 키가 달라져 다시 집계한다.
+    const kpi = (await kpiPrefs())[`${t.channel}:${t.accountId}`] || "";
+    const key = `creative:v3:${t.channel}:${t.accountId}:${since}:${until}${kpi ? `:k=${kpi}` : ""}`;
     const cached = force ? null : await cacheGet<CreativeRow[]>(key);
     if (cached) { oldest = Math.min(oldest, cached.updatedAt); return cached.value; }
     try {
@@ -1038,14 +1061,16 @@ export async function fetchMonthly(channel: Channel, accountId: string, months: 
     return rows.map((r: any) => ({ ...base, month: String(r.segments.month).slice(0, 7), campaignId: String(r.campaign.id), campaignName: r.campaign.name, product: productOf(r.campaign.advertisingChannelType) || "", imp: num(r.metrics.impressions), clk: num(r.metrics.clicks), cost: num(r.metrics.costMicros) / 1e6, conv: num(r.metrics.conversions), revenue: num(r.metrics.conversionsValue) }));
   }
   if (channel === "meta") {
+    const kpiTypes = await metaKpiTypes(accountId);
     const rows = await metaInsightsSafe(`act_${accountId}/insights`, { level: "campaign", time_increment: "monthly", time_range: JSON.stringify({ since, until }), fields: `campaign_id,campaign_name,objective,spend,impressions,clicks,actions,action_values,${META_CATALOG_FIELDS}` });
-    return rows.map((r: any) => ({ ...base, month: String(r.date_start).slice(0, 7), campaignId: String(r.campaign_id), campaignName: r.campaign_name, product: productOf(r.objective) || "", imp: num(r.impressions), clk: num(r.clicks), cost: num(r.spend), conv: metaConv(r), revenue: metaRev(r) }));
+    return rows.map((r: any) => ({ ...base, month: String(r.date_start).slice(0, 7), campaignId: String(r.campaign_id), campaignName: r.campaign_name, product: productOf(r.objective) || "", imp: num(r.impressions), clk: num(r.clicks), cost: num(r.spend), conv: metaConv(r, kpiTypes), revenue: metaRev(r, kpiTypes) }));
   }
   const out: MonthlyRow[] = [];
   if (channel === "naver_gfa") {
     const campaigns: any[] = [];
     for (let page = 0; page < 50; page++) { const items = gfaList(await gfaGet(`/adAccounts/${accountId}/campaigns`, { page: String(page), size: "100" })); campaigns.push(...items); if (items.length < 100) break; }
     const info = new Map(campaigns.map((c) => [String(c.no), c]));
+    const wantedConv = await gfaKpiType(accountId);
     for (const month of months) {
       const range = { startDate: monthBounds(month).since, endDate: monthBounds(month).until, timeUnit: "monthly" };
       const fetchRows = (path: string) => gfaPaged(`/adAccounts/${accountId}${path}`, range).catch(() => gfaPaged(`/adAccounts/${accountId}${path}`, { ...range, timeUnit: "daily" }));
@@ -1054,7 +1079,7 @@ export async function fetchMonthly(channel: Channel, accountId: string, months: 
       const agg = new Map<string, MonthlyRow>();
       const row = (no: string) => { if (!agg.has(no)) { const c = info.get(no); agg.set(no, { ...base, month, campaignId: no, campaignName: c?.name || `캠페인 ${no}`, product: productOf(c?.objective) || "", imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0 }); } return agg.get(no)!; };
       const perf = (r: any) => { const x = row(String(r.campaignNo ?? "")); x.imp += num(r.impCount); x.clk += num(r.clickCount); x.cost += num(r.sales); };
-      const conv = (r: any) => { if (r.convType === "PURCHASE") { const x = row(String(r.campaignNo ?? "")); x.conv += num(r.convCount); x.revenue += num(r.convSales); } };
+      const conv = (r: any) => { if (gfaConvHit(r, wantedConv)) { const x = row(String(r.campaignNo ?? "")); x.conv += num(r.convCount); x.revenue += num(r.convSales); } };
       sets.forEach(perf); camps.filter((r) => !inSets.has(String(r.campaignNo ?? ""))).forEach(perf);
       setConv.forEach(conv); campConv.filter((r) => !inSets.has(String(r.campaignNo ?? ""))).forEach(conv);
       out.push(...[...agg.values()].filter((r) => r.imp || r.cost));
