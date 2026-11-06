@@ -648,11 +648,12 @@ export default function Dashboard() {
       if (!response.ok) { window.alert(data.error || "적용하지 못했습니다."); return; }
       const ok = new Set((data.results as Array<{ id: string; ok: boolean }>).filter((r) => r.ok).map((r) => r.id));
       // 성공한 것만 화면에 즉시 반영
-      const patch = <T extends { id: string; status: string; dailyBudget?: number; active?: boolean }>(row: T): T => {
+      const patch = <T extends { id: string; status: string; dailyBudget?: number; landingUrl?: string; active?: boolean }>(row: T): T => {
         const op = ops.find((o) => (o as any).id === row.id);
         if (!op || !ok.has(row.id)) return row;
         if (op.kind === "set_status") return { ...row, status: op.status, active: op.status === "on" ? row.active ?? true : false };
         if (op.kind === "update_budget") return { ...row, dailyBudget: op.dailyBudget };
+        if (op.kind === "update_landing") return { ...row, landingUrl: op.url };
         return row;
       };
       setCampaigns((cur) => cur.map(patch));
@@ -976,6 +977,12 @@ export default function Dashboard() {
                         <input type="checkbox" checked={selection.has(ad.id)} onChange={(e) => toggleMany([{ id: ad.id, channel: ad.channel, entityType: "ad", name: ad.name }], e.target.checked)} />
                         {ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span className="ad-thumb empty" />}
                         <b>{ad.name}</b>
+                        {ad.landingUrl && <a className="id ad-landing" href={ad.landingUrl} target="_blank" rel="noreferrer" title={ad.landingUrl} onClick={(e) => e.stopPropagation()}>🔗 {ad.landingUrl.replace(/^https?:\/\//, "").slice(0, 42)}</a>}
+                        {ad.channel === "google_ads" && <button className="link-button small" title="랜딩(최종 URL) 변경 — 검색·디스플레이·영상 광고 공통" onClick={(e) => { e.stopPropagation();
+                          const v = (window.prompt(`'${ad.name}' 랜딩 URL을 바꿉니다`, ad.landingUrl || "https://") || "").trim();
+                          if (!v || v === ad.landingUrl) return;
+                          if (!/^https?:\/\/\S+$/.test(v)) return window.alert("http:// 또는 https:// 로 시작하는 주소를 넣어 주세요.");
+                          void applyOps([{ kind: "update_landing", channel: ad.channel, entityType: "ad", id: ad.id, url: v }]); }}>랜딩 변경</button>}
                         <StatusButton status={ad.status} label={ad.name} onToggle={(next) => void applyOps([{ kind: "set_status", channel: ad.channel, entityType: "ad", id: ad.id, status: next }])} />
                         <ScheduleBadge target={{ channel: ad.channel, entityType: "ad", id: ad.id, name: ad.name }} schedules={schedules} onOpen={(t) => setScheduleTargets([t])} />
                       </div>)}

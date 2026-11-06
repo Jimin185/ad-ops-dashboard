@@ -597,7 +597,8 @@ async function metaCreatives(accountId: string, since: string, until: string): P
     const creative = details[row.ad_id]?.creative || {};
     const link = creative.object_story_spec?.link_data || creative.object_story_spec?.video_data || {};
     return { id: row.ad_id, channel: "meta" as const, accountId, campaignId: packed("meta", accountId, String(row.campaign_id)), name: row.ad_name, campaignName: row.campaign_name, groupName: row.adset_name,
-      imageUrl: creative.image_url || link.picture || link.image_url || creative.thumbnail_url, headline: creative.title || link.name || link.title, body: creative.body || link.message,
+      imageUrl: creative.image_url || link.picture || link.image_url || creative.thumbnail_url, landingUrl: link.link || link.call_to_action?.value?.link,
+      headline: creative.title || link.name || link.title, body: creative.body || link.message,
       status: details[row.ad_id]?.effective_status, spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
       conversions: metaConv(row), revenue: metaRev(row) };
   });
@@ -629,7 +630,7 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
       try {
         for (const c of await gfaPagedList(accountId, "creatives", { adSetNo })) {
           const media = c.medias?.[0] || c.media || c.images?.[0] || c.image || {};
-          details[String(c.no ?? c.creativeNo ?? c.id)] = { name: c.name, image: media.url || media.imageUrl || c.imageUrl || c.thumbnailUrl || c.previewUrl, title: c.title || c.headline, body: c.description || c.body, activated: c.activated, status: c.status };
+          details[String(c.no ?? c.creativeNo ?? c.id)] = { name: c.name, image: media.url || media.imageUrl || c.imageUrl || c.thumbnailUrl || c.previewUrl, title: c.title || c.headline, body: c.description || c.body, activated: c.activated, status: c.status, landing: c.landingUrl || c.landing?.url || c.landing?.pcUrl || media.landingUrl };
         }
       } catch { /* 이 광고세트는 건너뜀 */ }
     }));
@@ -638,7 +639,7 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
   return top.map(([id, st]) => {
     const c = details[id] || {};
     return { id, channel: "naver_gfa" as const, accountId, campaignId: st.campaignNo ? packed("naver_gfa", accountId, st.campaignNo) : undefined, name: c.name || `소재 ${id}`,
-      imageUrl: c.image, headline: c.title, body: c.body, status: c.activated === undefined ? c.status : (c.activated ? "ON" : "OFF"),
+      imageUrl: c.image, landingUrl: c.landing, headline: c.title, body: c.body, status: c.activated === undefined ? c.status : (c.activated ? "ON" : "OFF"),
       spend: st.spend, impressions: st.impressions, clicks: st.clicks, conversions: st.conversions, revenue: st.revenue };
   });
 }
@@ -1126,21 +1127,27 @@ export const liveAdapter = {
       const rows = await naverRequest("GET", `/ncc/ads?nccAdgroupId=${encodeURIComponent(key.id)}`, undefined, key.account);
       return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdId), adgroupId, channel,
         name: row.referenceData?.productName || row.ad?.headline || row.subject || row.description || row.nccAdId, status: row.userLock ? "off" : "on",
-        imageUrl: row.referenceData?.imageUrl, active: !row.userLock && row.status !== "PAUSED" }));
+        imageUrl: row.referenceData?.imageUrl, landingUrl: row.ad?.pc?.final || row.ad?.mobile?.final || row.referenceData?.landingUrl,
+        active: !row.userLock && row.status !== "PAUSED" }));
     }
     if (channel === "meta") {
-      const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status,effective_status,creative.thumbnail_width(120).thumbnail_height(120){thumbnail_url,image_url}", limit: "500" });
-      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), adgroupId, channel, name: row.name, status: asStatus(row.status),
-        imageUrl: row.creative?.thumbnail_url || row.creative?.image_url, active: row.effective_status === "ACTIVE" }));
+      const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status,effective_status,creative.thumbnail_width(120).thumbnail_height(120){thumbnail_url,image_url,object_story_spec}", limit: "500" });
+      return body.data.map((row: any) => { const osp = row.creative?.object_story_spec || {}; const link = osp.link_data || osp.video_data || {};
+        return { id: packed(channel, key.account, row.id), adgroupId, channel, name: row.name, status: asStatus(row.status),
+          imageUrl: row.creative?.thumbnail_url || row.creative?.image_url, landingUrl: link.link || link.call_to_action?.value?.link,
+          active: row.effective_status === "ACTIVE" }; });
     }
     if (channel === "google_ads") {
-      const rows = await googleSearch(key.account, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.status FROM ad_group_ad WHERE ad_group.id = ${key.id} AND ad_group_ad.status != 'REMOVED'`);
-      return rows.map((row: any) => ({ id: packed(channel, key.account, String(row.adGroupAd.ad.id)), adgroupId, channel, name: row.adGroupAd.ad.name || String(row.adGroupAd.ad.id), status: asStatus(row.adGroupAd.status) }));
+      const rows = await googleSearch(key.account, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad.final_urls, ad_group_ad.status FROM ad_group_ad WHERE ad_group.id = ${key.id} AND ad_group_ad.status != 'REMOVED'`);
+      return rows.map((row: any) => ({ id: packed(channel, key.account, String(row.adGroupAd.ad.id)), adgroupId, channel,
+        name: row.adGroupAd.ad.name || `${row.adGroupAd.ad.type || ""} ${row.adGroupAd.ad.id}`.trim(), status: asStatus(row.adGroupAd.status),
+        landingUrl: row.adGroupAd.ad.finalUrls?.[0] }));
     }
     if (channel === "naver_gfa") {
       const rows = (await gfaPagedList(key.account, "creatives", { adSetNo: key.id })).filter((row) => String(row.adSetNo) === key.id);
       return rows.map((row: any) => { const media = row.image || row.medias?.[0] || {}; return { id: packed(channel, key.account, String(row.no)), adgroupId, channel, name: row.name || `소재 ${row.no}`,
-        status: (row.activated === false ? "off" : "on") as EntityStatus, imageUrl: media.imageUrl || media.url, active: row.activated !== false }; });
+        status: (row.activated === false ? "off" : "on") as EntityStatus, imageUrl: media.imageUrl || media.url,
+        landingUrl: row.landingUrl || row.landing?.url || row.landing?.pcUrl || media.landingUrl, active: row.activated !== false }; });
     }
     throw new Error("지원하지 않는 채널입니다.");
   },
@@ -1168,6 +1175,14 @@ export const liveAdapter = {
   },
   async apply(operation: ChangeOperation) {
     if (operation.kind === "media_plan") return executeMediaPlan(operation.steps as MediaStep[], operation.accountKeys);
+    if (operation.kind === "update_landing") {
+      // 광고의 랜딩(최종 URL) 변경. 구글은 final_urls가 수정 가능한 필드라 바로 바꾼다 (SA·DA·VA 공통).
+      // 네이버·메타·GFA는 소재 내용이 불변이라 새 소재 등록 방식이 필요해 아직 막아 둔다.
+      if (operation.channel !== "google_ads") throw new Error("랜딩 변경은 지금 구글애즈만 지원해요. 네이버·메타·GFA는 소재를 새로 만들어 교체하는 방식이라 준비 중입니다.");
+      const key = unpack(operation.id);
+      await googleRequest(`customers/${key.account}/ads:mutate`, { operations: [{ update: { resourceName: `customers/${key.account}/ads/${key.id}`, finalUrls: [operation.url] }, updateMask: "finalUrls" }] });
+      return { success: true, changed: 1 };
+    }
     if (operation.channel === "naver_gfa") {
       const key = unpack(operation.id);
       if (operation.kind === "set_status") await gfaSetActive(key.account, operation.entityType, key.id, operation.status === "on");

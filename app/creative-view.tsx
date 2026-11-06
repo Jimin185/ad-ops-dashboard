@@ -77,6 +77,7 @@ export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines
               {r.campaignId ? <button className="link-button campaign-link small" title="매체별 데이터에서 캠페인 보기" onClick={() => onOpenCampaign?.(r.campaignId!)}>{[r.campaignName, r.groupName].filter(Boolean).join(" › ") || "캠페인 보기"}</button>
                 : <small title={`${r.campaignName || ""} › ${r.groupName || ""}`}>{[r.campaignName, r.groupName].filter(Boolean).join(" › ") || "–"}</small>}
               {r.headline && <p className="creative-copy">{r.headline}</p>}
+              {r.landingUrl && <a className="viz-sub creative-landing" href={r.landingUrl} target="_blank" rel="noreferrer" title={r.landingUrl}>🔗 {r.landingUrl.replace(/^https?:\/\//, "").slice(0, 38)}</a>}
               <dl>
                 <div><dt>광고비</dt><dd>{won.format(r.spend)}</dd></div>
                 <div><dt>ROAS</dt><dd className={value >= avgRoas ? "good" : "bad"}>{Math.round(value)}%</dd></div>

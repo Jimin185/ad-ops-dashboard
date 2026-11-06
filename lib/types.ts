@@ -57,6 +57,7 @@ export type Ad = {
   name: string;
   status: EntityStatus;
   imageUrl?: string;
+  landingUrl?: string;
   active?: boolean;
 };
 
@@ -80,6 +81,7 @@ export type ChangeOperation =
   | { kind: "media_plan"; channel: Channel; summary: string; steps: MediaPlanStep[]; accountKeys: string[] }
   | { kind: "update_budget"; channel: Channel; entityType: EntityType; id: string; dailyBudget: number }
   | { kind: "set_status"; channel: Channel; entityType: EntityType; id: string; status: EntityStatus }
+  | { kind: "update_landing"; channel: Channel; entityType: "ad"; id: string; url: string }
   | {
       kind: "create_text_ad";
       channel: "naver_sa";
@@ -133,6 +135,7 @@ export type CreativeRow = {
   campaignName?: string;
   groupName?: string;
   imageUrl?: string;
+  landingUrl?: string;
   headline?: string;
   body?: string;
   status?: string;
