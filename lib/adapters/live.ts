@@ -801,8 +801,13 @@ async function metaCanvasLanding(link?: string): Promise<string | undefined> {
     const body = await metaGet(m[1], { fields: "body_elements" });
     const text = JSON.stringify(body).replace(/\\\//g, "/");
     url = (text.match(/https?:\/\/[^"\\\s]+/g) || []).find((u) => !/facebook\.com|fb\.com|fbcdn|instagram\.com/.test(u)) || "";
-  } catch { url = ""; }
-  await cacheSet(key, url, Date.now() + 14 * 86400_000);
+    if (!url) console.error(`캔버스 ${m[1]} 에서 외부 랜딩을 못 찾음 (body_elements ${text.length}자)`);
+  } catch (error) {
+    console.error(`캔버스 ${m[1]} 조회 실패 — ${error instanceof Error ? error.message : String(error)}`);
+    url = "";
+  }
+  // 성공은 14일, 실패는 1시간만 캐시해 권한 문제를 고치면 금방 다시 시도되게 한다
+  await cacheSet(key, url, Date.now() + (url ? 14 * 86400_000 : 3600_000));
   return url || undefined;
 }
 /** CreativeRow/Ad 목록의 캔버스 링크를 실제 랜딩으로 바꿔 준다 */
