@@ -5,6 +5,7 @@ import type { Advertiser, MediaMix } from "@/lib/mix";
 import { lineGroups, matchMix, mixTotalBudget } from "@/lib/mix";
 import { ReportView } from "./report-view";
 import { MixView } from "./mix-view";
+import { MixMappingView } from "./mix-mapping";
 import { CreativeView } from "./creative-view";
 import { SaView } from "./sa-view";
 import { MarketView } from "./market-view";
@@ -29,7 +30,7 @@ function panelStyle(pos: { right: number; bottom: number }): React.CSSProperties
 }
 const titleOf = (messages: ChatMessage[]) => (messages.find((m) => m.role === "user")?.content || "새 대화").replace(/\s+/g, " ").slice(0, 40);
 type ChatMessage = { role: "user" | "assistant"; content: string; attachments?: string[]; pendingActions?: PendingAction[]; mixDrafts?: MediaMix[]; usage?: { input: number; output: number; cached: number }; model?: string };
-type DashTab = "report" | "mix" | "ops" | "detail";
+type DashTab = "report" | "mix" | "ops" | "mapping" | "detail";
 const MIX_STORAGE = "adops-mixes";
 
 type RegisteredNaverSa = { id: string; name: string; token: string };
@@ -780,7 +781,7 @@ export default function Dashboard() {
       </header>
 
       <nav className="view-tabs" aria-label="화면 전환">
-        {([["report", "대시보드"], ["ops", "매체별 데이터"], ["detail", "세부 성과분석"]] as Array<[DashTab, string]>).map(([key, label]) => <button key={key} className={dashTab === key || (key === "report" && dashTab === "mix") ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
+        {([["report", "대시보드"], ["ops", "매체별 데이터"], ["mapping", "믹스 매핑"], ["detail", "세부 성과분석"]] as Array<[DashTab, string]>).map(([key, label]) => <button key={key} className={dashTab === key || (key === "report" && dashTab === "mix") ? "active" : ""} onClick={() => setDashTab(key)}>{label}</button>)}
         <span className={`storage-badge ${storageMode}`} title={storageError || undefined}>{storageMode === "supabase" ? "Supabase 저장" : storageMode === "local" ? "이 브라우저에만 저장" : "…"}</span>
       </nav>
       {storageError && <div className="connection-error"><b>저장소 오류</b><span>{storageError}</span></div>}
@@ -794,6 +795,7 @@ export default function Dashboard() {
 
       {dashTab === "report" && <ReportView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
       {dashTab === "mix" && selectedAdvertiser && <MixView onOpenCampaign={goToCampaign} campaigns={advertiserCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
+      {dashTab === "mapping" && selectedAdvertiser && <MixMappingView advertiserId={selectedAdvertiser.id} mixes={mixes} campaigns={advertiserCampaigns} onSave={saveMix} />}
       {dashTab === "mix" && <button className="link-button back-link" onClick={() => setDashTab("report")}>← 대시보드로</button>}
       {dashTab === "detail" && <nav className="segmented" aria-label="세부 성과분석">
         {hasSa && <button className={detailTab === "sa" ? "active" : ""} onClick={() => setDetailTab("sa")}>SA 분석</button>}
