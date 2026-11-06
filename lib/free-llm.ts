@@ -99,3 +99,29 @@ export async function runFreeAssistant(history: Array<{ role: "user" | "assistan
   }
   return mixDrafts.length ? { kind: "answer", text: "믹스 초안을 만들었어요. 카드에서 확인하고 저장해 주세요.", usage, label: cfg.label, mixDrafts } : { kind: "escalate", reason: "단계가 많아 Claude로 넘김" };
 }
+
+/** 무료 모델로 JSON 한 번 받기(도구 없이). 실패하면 null → 호출한 쪽이 다른 방법을 쓴다. */
+export async function freeJson(system: string, user: string, schema: object, timeoutMs = 45_000): Promise<{ data: any; usage: { input: number; output: number }; label: string } | null> {
+  const cfg = freeLlmConfig();
+  if (!cfg) return null;
+  const deadline = Date.now() + timeoutMs;
+  const call = (model: string, strict: boolean) => fetch(`${cfg.base}/chat/completions`, {
+    method: "POST", signal: AbortSignal.timeout(Math.max(5_000, deadline - Date.now())),
+    headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, temperature: 0.1, max_tokens: 16000,
+      messages: [{ role: "system", content: strict ? system : `${system}\n\n아래 JSON 스키마에 맞는 JSON 하나만 출력하세요:\n${JSON.stringify(cleanSchema(schema))}` }, { role: "user", content: user }],
+      response_format: strict ? { type: "json_schema", json_schema: { name: "result", schema: cleanSchema(schema) } } : { type: "json_object" } }),
+  }).catch(() => null);
+  for (const model of [cfg.model, ...cfg.fallbacks]) {
+    if (Date.now() > deadline) break;
+    let res = await call(model, true);
+    if (res && res.status === 400) res = await call(model, false); // 스키마 형식을 못 받는 모델이면 JSON 모드로
+    if (!res) continue;
+    if ([429, 500, 503].includes(res.status)) continue;
+    if (!res.ok) return null;
+    const body: any = await res.json().catch(() => ({}));
+    const text = String(body.choices?.[0]?.message?.content || "").replace(/^```(?:json)?\s*|\s*```$/g, "");
+    try { return { data: JSON.parse(text), usage: { input: Number(body.usage?.prompt_tokens) || 0, output: Number(body.usage?.completion_tokens) || 0 }, label: cfg.label }; } catch { continue; }
+  }
+  return null;
+}
