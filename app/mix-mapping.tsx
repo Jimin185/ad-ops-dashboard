@@ -181,6 +181,8 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
   const [markup, setMarkup] = useState<Record<string, number>>({});
   const planGroupsRef = useRef<PlanGroups>(new Map());
   useEffect(() => { try { setMarkup(JSON.parse(localStorage.getItem(`adops-markup:${advertiserId}`) || "{}")); } catch { setMarkup({}); } }, [advertiserId]);
+  // 달·광고주가 바뀌면 광고그룹 캐시와 열린 플랜을 비운다
+  useEffect(() => { planGroupsRef.current = new Map(); setPlan(null); }, [month, advertiserId]);
   /** 네이버 SA·GFA 하루예산 입력칸은 VAT 포함 기준 → 매체 집행액에 ×1.1 해서 넣는다 */
   const vat = (channel: Channel) => channel === "naver_sa" || channel === "naver_gfa" ? 1.1 : 1;
   function setMarkupRate(channel: Channel, value: number, rebuild: boolean) {
@@ -259,17 +261,21 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
   async function buildPlan() {
     setBusy("예산 단위(캠페인/광고그룹)를 확인하는 중…");
     try {
-      // 캠페인 예산이 없는 캠페인들의 광고그룹을 미리 받아 둔다
-      const needGroups = results.flatMap((r) => r.line.budget ? r.campaigns.filter((c) => isRunning(c) && !c.dailyBudget && c.channel !== "google_ads") : []);
-      const groupsByCampaign: PlanGroups = new Map();
-      await Promise.all([...new Map(needGroups.map((c) => [c.id, c])).values()].map(async (c) => {
+      // 광고그룹 조회가 정말 필요한 캠페인만 추린다: 캠페인 예산도 총예산(CBO)도 없는 Meta·GFA·네이버 (브랜드검색 제외)
+      const needGroups = results.flatMap((r) => r.line.budget ? r.campaigns.filter((c) => isRunning(c) && !c.dailyBudget && !c.lifetimeBudget
+        && c.channel !== "google_ads" && !(c.channel === "naver_sa" && (c.product || "").includes("브랜드"))) : []);
+      const groupsByCampaign = planGroupsRef.current; // 한 번 받은 캠페인은 다시 조회하지 않는다 (느린 건 GFA 광고세트 목록)
+      const targets = [...new Map(needGroups.map((c) => [c.id, c])).values()].filter((c) => !groupsByCampaign.has(c.id));
+      let done = 0;
+      if (targets.length) setBusy(`예산 단위(광고그룹)를 확인하는 중… 0/${targets.length}`);
+      await Promise.all(targets.map(async (c) => {
         try {
           const res = await (apiFetch || fetch)(`/api/entities?channel=${c.channel}&campaignId=${encodeURIComponent(c.id)}`);
           const data = await res.json();
           if (res.ok) groupsByCampaign.set(c.id, data.adgroups || []);
         } catch { /* 이 캠페인은 캠페인 단위로 시도 */ }
+        finally { done += 1; setBusy(`예산 단위(광고그룹)를 확인하는 중… ${done}/${targets.length}`); }
       }));
-      planGroupsRef.current = groupsByCampaign;
       computePlan(groupsByCampaign);
     } finally { setBusy(""); }
   }
