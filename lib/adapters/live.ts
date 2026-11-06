@@ -678,9 +678,45 @@ async function gfaCreatives(accountId: string, since: string, until: string): Pr
   });
 }
 
+/** 구글 디스플레이·디맨드젠 소재 성과 (이미지 에셋 URL 포함) */
+async function googleCreatives(accountId: string, since: string, until: string): Promise<CreativeRow[]> {
+  const SEL = "metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions, metrics.conversions_value";
+  const date = `segments.date BETWEEN '${since}' AND '${until}'`;
+  const BASE = "campaign.id, campaign.name, ad_group.name, ad_group_ad.status, ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.final_urls";
+  const [display, demandGen] = await Promise.all([
+    googleSearch(accountId, `SELECT ${BASE}, ad_group_ad.ad.responsive_display_ad.marketing_images, ad_group_ad.ad.responsive_display_ad.square_marketing_images, ad_group_ad.ad.responsive_display_ad.long_headline, ad_group_ad.ad.responsive_display_ad.headlines, ad_group_ad.ad.responsive_display_ad.descriptions, ${SEL} FROM ad_group_ad WHERE ${date} AND campaign.advertising_channel_type = 'DISPLAY' AND metrics.cost_micros > 0 ORDER BY metrics.cost_micros DESC LIMIT 60`).catch(() => []),
+    googleSearch(accountId, `SELECT ${BASE}, ad_group_ad.ad.demand_gen_multi_asset_ad.marketing_images, ad_group_ad.ad.demand_gen_multi_asset_ad.square_marketing_images, ad_group_ad.ad.demand_gen_multi_asset_ad.headlines, ad_group_ad.ad.demand_gen_multi_asset_ad.descriptions, ${SEL} FROM ad_group_ad WHERE ${date} AND campaign.advertising_channel_type = 'DEMAND_GEN' AND metrics.cost_micros > 0 ORDER BY metrics.cost_micros DESC LIMIT 60`).catch(() => []),
+  ]);
+  const rows = [...display, ...demandGen];
+  // 이미지 에셋 → URL. marketing_images 는 asset 리소스 이름만 주므로 asset 조회로 URL을 푼다.
+  const assetIds = [...new Set(rows.flatMap((r: any) => {
+    const ad = r.adGroupAd?.ad || {};
+    const imgs = [...(ad.responsiveDisplayAd?.squareMarketingImages || []), ...(ad.responsiveDisplayAd?.marketingImages || []),
+      ...(ad.demandGenMultiAssetAd?.squareMarketingImages || []), ...(ad.demandGenMultiAssetAd?.marketingImages || [])];
+    return imgs.map((img: any) => String(img.asset || "").split("/").pop()).filter(Boolean);
+  }))].slice(0, 200) as string[];
+  const urlByAsset = new Map<string, string>();
+  for (let i = 0; i < assetIds.length; i += 100) {
+    const assets = await googleSearch(accountId, `SELECT asset.id, asset.image_asset.full_size.url FROM asset WHERE asset.id IN (${assetIds.slice(i, i + 100).join(",")})`).catch(() => []);
+    for (const a of assets) if (a.asset?.imageAsset?.fullSize?.url) urlByAsset.set(String(a.asset.id), a.asset.imageAsset.fullSize.url);
+  }
+  return rows.map((r: any) => {
+    const ad = r.adGroupAd?.ad || {};
+    const rda = ad.responsiveDisplayAd || ad.demandGenMultiAssetAd || {};
+    const firstImg = [...(rda.squareMarketingImages || []), ...(rda.marketingImages || [])].map((img: any) => urlByAsset.get(String(img.asset || "").split("/").pop() || ""))
+      .find(Boolean);
+    const headline = rda.longHeadline?.text || rda.headlines?.[0]?.text || "";
+    return { id: String(ad.id), channel: "google_ads" as const, accountId, campaignId: packed("google_ads", accountId, String(r.campaign.id)),
+      name: ad.name || headline || `광고 ${ad.id}`, campaignName: r.campaign.name, groupName: r.adGroup?.name,
+      imageUrl: firstImg, landingUrl: ad.finalUrls?.[0], headline, body: rda.descriptions?.[0]?.text || "", status: r.adGroupAd?.status,
+      spend: num(r.metrics?.costMicros) / 1e6, impressions: num(r.metrics?.impressions), clicks: num(r.metrics?.clicks),
+      conversions: num(r.metrics?.conversions), revenue: num(r.metrics?.conversionsValue) };
+  });
+}
+
 export async function getCreativeReport(accountKeys: string[], since: string, until: string, force = false) {
   const targets = [...new Set(accountKeys)].map((key) => { const [channel, ...rest] = key.split(":"); return { channel: channel as Channel, accountId: rest.join(":") }; })
-    .filter((t) => t.channel === "meta" || t.channel === "naver_gfa");
+    .filter((t) => t.channel === "meta" || t.channel === "naver_gfa" || t.channel === "google_ads");
   const errors: Array<{ channel: Channel; accountId: string; message: string }> = [];
   let oldest = Date.now();
   const pendingAccounts: string[] = [];
@@ -691,7 +727,7 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
     const cached = force ? null : await cacheGet<CreativeRow[]>(key);
     if (cached) { oldest = Math.min(oldest, cached.updatedAt); return cached.value; }
     try {
-      const work = (t.channel === "meta" ? metaCreatives(t.accountId, since, until) : gfaCreatives(t.accountId, since, until))
+      const work = (t.channel === "meta" ? metaCreatives(t.accountId, since, until) : t.channel === "google_ads" ? googleCreatives(t.accountId, since, until) : gfaCreatives(t.accountId, since, until))
         .then(async (rows) => { await cacheSet(key, rows, isFinalDate(until) ? null : nextDailyRefresh()); return rows; });
       // 45초 안에 안 끝나는 계정은 다음 호출에서 이어서 (끝난 계정은 이미 저장됨)
       const result = await timeLimit(work, 45_000);

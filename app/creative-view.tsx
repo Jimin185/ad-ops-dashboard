@@ -14,7 +14,7 @@ const roas = (r: CreativeRow) => r.spend ? r.revenue / r.spend * 100 : 0;
 const ctr = (r: CreativeRow) => r.impressions ? r.clicks / r.impressions * 100 : 0;
 
 export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines, onOpenCampaign }: { onOpenCampaign?: (campaignId: string) => void; accountKeys: string[]; apiFetch: (url: string, init?: RequestInit) => Promise<Response>; accounts: AdAccount[]; campaigns: Campaign[]; lines?: MixLine[] }) {
-  const targets = accountKeys.filter((key) => key.startsWith("meta:") || key.startsWith("naver_gfa:"));
+  const targets = accountKeys.filter((key) => key.startsWith("meta:") || key.startsWith("naver_gfa:") || key.startsWith("google_ads:"));
   const [period, setPeriod] = useState<Period>("this_month");
   const [filter, setFilter] = useState<Filter>(EMPTY_FILTER);
   const campaignsById = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
@@ -49,14 +49,14 @@ export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines
   }, [rows, filter, sort, query, campaignsById, lineSets]);
   const avgRoas = useMemo(() => { const s = visible.reduce((a, r) => a + r.spend, 0); return s ? visible.reduce((a, r) => a + r.revenue, 0) / s * 100 : 0; }, [visible]);
 
-  if (!targets.length) return <section className="report"><div className="empty-state"><b>Meta·GFA 계정이 매핑되어 있지 않습니다.</b><span>소재 성과는 Meta와 네이버 GFA 계정에서 볼 수 있습니다.</span></div></section>;
+  if (!targets.length) return <section className="report"><div className="empty-state"><b>Meta·GFA·구글 계정이 매핑되어 있지 않습니다.</b><span>소재 성과는 Meta, 네이버 GFA, 구글(디스플레이·디맨드젠) 계정에서 볼 수 있습니다.</span></div></section>;
 
   return (
     <section className="report">
       <div className="report-toolbar">
         <nav className="channel-tabs">{([["this_month", "이번 달"], ["last_month", "지난 달"], ["last_30", "최근 30일"]] as Array<[Period, string]>).map(([key, label]) => <button key={key} className={period === key ? "active" : ""} onClick={() => setPeriod(key)}>{label}</button>)}</nav>
       </div>
-      <FilterBar value={filter} onChange={setFilter} accountKeys={accountKeys} accounts={accounts} campaigns={campaigns} lines={lines} channels={["meta", "naver_gfa"]} />
+      <FilterBar value={filter} onChange={setFilter} accountKeys={accountKeys} accounts={accounts} campaigns={campaigns} lines={lines} channels={["meta", "naver_gfa", "google_ads"]} />
       <div className="creative-toolbar">
         <input className="account-search" type="search" placeholder="소재·캠페인·광고세트 이름으로 검색" value={query} onChange={(e) => setQuery(e.target.value)} />
         <label className="sort-select">정렬 <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>{SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
@@ -69,7 +69,7 @@ export function CreativeView({ accountKeys, apiFetch, accounts, campaigns, lines
           return <article className="creative-card" key={`${r.channel}:${r.id}`}>
             <div className="creative-thumb">
               {r.imageUrl ? <img src={r.imageUrl} alt={r.name} loading="lazy" referrerPolicy="no-referrer" /> : <span>이미지 없음</span>}
-              <span className={`channel ${r.channel}`}>{r.channel === "meta" ? "Meta" : "GFA"}</span>
+              <span className={`channel ${r.channel}`}>{r.channel === "meta" ? "Meta" : r.channel === "google_ads" ? "Google" : "GFA"}</span>
               <span className="rank">#{index + 1}</span>
             </div>
             <div className="creative-body">

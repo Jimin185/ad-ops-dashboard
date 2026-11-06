@@ -915,13 +915,16 @@ export default function Dashboard() {
       {dashTab === "mapping" && selectedAdvertiser && <MixMappingView advertiserId={selectedAdvertiser.id} mixes={mixes} campaigns={budgetCampaigns} onSave={saveMix} onExclude={(c) => setExcludeTargets([c])} onApplyOps={applyOps} apiFetch={apiFetch} excludedCount={excludedIds.size} />}
       {dashTab === "mix" && <button className="link-button back-link" onClick={() => setDashTab("report")}>← 대시보드로</button>}
       {dashTab === "detail" && <nav className="segmented" aria-label="세부 성과분석">
-        {hasSa && <button className={detailTab === "sa" ? "active" : ""} onClick={() => setDetailTab("sa")}>SA 분석</button>}
-        {googleIds.length > 0 && <button className={detailTab === "google" ? "active" : ""} onClick={() => setDetailTab("google")}>구글 검색</button>}
-        <button className={detailTab === "creative" || (detailTab === "sa" && !hasSa) ? "active" : ""} onClick={() => setDetailTab("creative")}>DA 소재성과</button>
+        {(hasSa || googleIds.length > 0) && <button className={detailTab === "sa" || detailTab === "google" ? "active" : ""} onClick={() => setDetailTab(hasSa ? "sa" : "google")}>SA 분석</button>}
+        <button className={detailTab === "creative" || (!hasSa && !googleIds.length) ? "active" : ""} onClick={() => setDetailTab("creative")}>DA 소재성과</button>
+      </nav>}
+      {dashTab === "detail" && (detailTab === "sa" || detailTab === "google") && hasSa && googleIds.length > 0 && <nav className="segmented small" aria-label="검색 매체">
+        <button className={detailTab === "sa" ? "active" : ""} onClick={() => setDetailTab("sa")}>네이버 SA</button>
+        <button className={detailTab === "google" ? "active" : ""} onClick={() => setDetailTab("google")}>구글 검색</button>
       </nav>}
       {dashTab === "detail" && detailTab === "sa" && hasSa && <SaView onOpenCampaign={goToCampaign} apiFetch={apiFetch} accountIds={(selectedAdvertiser?.accountKeys || []).filter((k) => k.startsWith("naver_sa:")).map((k) => { const id = k.slice("naver_sa:".length); return { id, name: accounts.find((a) => a.channel === "naver_sa" && a.id === id)?.name || `네이버 SA ${id}` }; })} />}
-      {dashTab === "detail" && detailTab === "google" && googleIds.length > 0 && <GoogleSaView onOpenCampaign={goToCampaign} apiFetch={apiFetch} accountIds={googleIds} />}
-      {dashTab === "detail" && (detailTab === "creative" || (detailTab === "sa" && !hasSa) || (detailTab === "google" && !googleIds.length)) && <CreativeView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
+      {dashTab === "detail" && ((detailTab === "google" && googleIds.length > 0) || (detailTab === "sa" && !hasSa && googleIds.length > 0)) && <GoogleSaView onOpenCampaign={goToCampaign} apiFetch={apiFetch} accountIds={googleIds} />}
+      {dashTab === "detail" && (detailTab === "creative" || (!hasSa && !googleIds.length)) && <CreativeView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} apiFetch={apiFetch} accounts={accounts} campaigns={advertiserCampaigns} lines={currentMixLines} />}
       {dashTab === "ops" && <>
         <section className="metrics">
           <article><span>이번 달 광고비</span><strong>{won.format(totals.spend)}</strong><small>연결 채널 통합</small></article>
