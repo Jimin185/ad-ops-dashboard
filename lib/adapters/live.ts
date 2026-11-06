@@ -851,7 +851,10 @@ async function gfaSetBudget(account: string, entityType: EntityType, id: string,
   if (entityType !== "adgroup") throw new Error("GFA는 광고세트(광고그룹) 단위로 예산을 바꿀 수 있어요. 캠페인 아래 광고세트의 예산을 바꿔 주세요.");
   const current = await gfaRequest("GET", `adAccounts/${account}/adSets/${id}`);
   const row = { ...(current?.data && !Array.isArray(current.data) ? current.data : current) };
+  // 예산 필드가 응답마다 다르다: budgetAmount 평면형 / budget.dailyBudget 중첩형 / dailyBudget. 있는 쪽을 모두 맞춰 넣는다.
   row.budgetAmount = Math.round(amount);
+  if (row.dailyBudget !== undefined) row.dailyBudget = Math.round(amount);
+  if (row.budget && typeof row.budget === "object") row.budget = { ...row.budget, dailyBudget: Math.round(amount) };
   const { status: _s, spentBudgetRatio: _r, ...clean } = row;
   return gfaTry("예산 변경", `adAccounts/${account}/adSets/edit`, [clean, row, [clean]]);
 }

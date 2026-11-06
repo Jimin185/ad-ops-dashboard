@@ -21,7 +21,9 @@ export async function POST(request: Request) {
         await getAdapter().apply(op);
         results.push({ id: (op as any).id, ok: true });
       } catch (error) {
-        results.push({ id: (op as any).id, ok: false, error: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`manual/apply 실패 ${op.kind} ${(op as any).channel}:${(op as any).entityType}:${(op as any).id} — ${message}`);
+        results.push({ id: (op as any).id, ok: false, error: message });
       }
     }
     return Response.json({ results, applied: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length });
