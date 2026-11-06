@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { sanitizeLines } from "@/lib/mix";
+import { freeJson } from "@/lib/free-llm";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -40,7 +41,6 @@ const SCHEMA = {
 };
 
 export async function POST(request: Request) {
-  if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "Claude API 키가 설정되지 않았습니다." }, { status: 503 });
   try {
     const body = (await request.json()) as { text?: string; lines?: unknown[]; campaigns?: Array<{ channel: string; name: string }> };
     const names = [...new Set((body.campaigns || []).map((c) => `${c.channel}|${String(c.name).slice(0, 60)}`))].slice(0, 400);
@@ -49,13 +49,18 @@ export async function POST(request: Request) {
       : `붙여넣은 믹스:\n${String(body.text || "").slice(0, 6000)}`;
     if (!body.lines?.length && !String(body.text || "").trim()) return Response.json({ error: "붙여넣은 내용이 없습니다." }, { status: 400 });
 
+    const prompt = `운영 중 캠페인(채널|이름):\n${names.join("\n")}\n\n${task}`;
+    // 무료 모델(Gemini)을 먼저 쓰고, 안 되면 Claude
+    const free = await freeJson(SYSTEM, prompt, SCHEMA).catch(() => null);
+    if (free && Array.isArray(free.data?.lines)) return Response.json({ lines: sanitizeLines(free.data.lines), usage: free.usage, model: free.label });
+    if (!process.env.ANTHROPIC_API_KEY) return Response.json({ error: "무료 모델 응답이 없고 Claude API 키도 없습니다. 잠시 후 다시 시도해 주세요." }, { status: 503 });
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const response = await client.messages.create({
       model: "claude-opus-5-5",
       max_tokens: 8000,
       output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
       system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: `운영 중 캠페인(채널|이름):\n${names.join("\n")}\n\n${task}` }],
+      messages: [{ role: "user", content: prompt }],
     });
     if (response.stop_reason === "refusal") return Response.json({ error: "요청을 처리할 수 없습니다." }, { status: 422 });
     const text = response.content.filter((b) => b.type === "text").map((b: any) => b.text).join("");
