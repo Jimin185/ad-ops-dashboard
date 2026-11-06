@@ -2,7 +2,7 @@ import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
 import Anthropic from "@anthropic-ai/sdk";
 import { freeLlmConfig, runFreeAssistant } from "@/lib/free-llm";
 import { assistantTools, executeAssistantTool, type AssistantContext, type MixLineSummary } from "@/lib/assistant-tools";
-import type { MediaMix } from "@/lib/mix";
+import { detectMonth, diffLines, lineGroup, parseMixAttachment, sanitizeMix, type MediaMix } from "@/lib/mix";
 import type { PendingAction } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -46,7 +46,7 @@ async function handle(request: Request) {
   let freeFallback: ((note: string) => Promise<Response | null>) | null = null;
   try {
     const started = Date.now();
-    const body = (await request.json()) as { mode?: "auto" | "claude"; continuation?: Continuation; attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
+    const body = (await request.json()) as { mode?: "auto" | "claude" | "gemini"; continuation?: Continuation; attachments?: Array<{ name: string; kind: "text" | "pdf" | "image"; data: string; mediaType?: string }>; messages?: ClientMessage[]; context?: { advertiserId?: string; advertiserName?: string; accountKeys?: string[]; mixes?: MediaMix[]; mixLineSummary?: MixLineSummary } };
     const cont = body.continuation;
     const history = (body.messages || []).slice(-20);
     if (!history.length && !cont?.messages?.length) return Response.json({ error: "메시지를 입력해 주세요." }, { status: 400 });
@@ -58,11 +58,30 @@ async function handle(request: Request) {
     // 표·텍스트 첨부(CSV·엑셀 변환본)는 무료 모델에도 넣어 준다. PDF·이미지는 Claude만 읽는다.
     const textFiles = (body.attachments || []).filter((f) => f.kind === "text");
     const freeHistory = textFiles.length && history.length ? [...history.slice(0, -1), { ...history[history.length - 1], content: `${textFiles.map((f) => `[첨부 파일: ${f.name}]\n${String(f.data).slice(0, 40_000)}`).join("\n\n")}\n\n${history[history.length - 1].content}` }] : history;
+    // 0) 믹스·예산 표를 첨부해 반영해 달라고 하면 AI 없이 표를 그대로 읽어 초안을 만든다(금액 그대로, 토큰 0).
+    const lastText = String(history[history.length - 1]?.content || "");
+    if (!cont && textFiles.length && /믹스|반영|월예산|예산\s*표|예산안|수정안/.test(lastText)) {
+      const preview = mixImportPreview(textFiles, lastText, ctx);
+      if (preview) return Response.json(preview);
+    }
+    const geminiOnly = body.mode === "gemini";
     if (!cont && freeLlmConfig() && !(body.attachments || []).some((f) => f.kind !== "text") && body.mode !== "claude") {
       const free = await runFreeAssistant(freeHistory, screenLine, ctx, request.signal, started + (textFiles.length ? 52_000 : 40_000)).catch((e) => ({ kind: "escalate" as const, reason: String(e).slice(0, 120) }));
       if (request.signal.aborted) return new Response(null, { status: 499 });
       if (free.kind === "answer") return Response.json({ message: free.text, pendingActions: [], mixDrafts: free.mixDrafts, usage: free.usage, model: free.label });
       escalated = free.reason;
+      // Gemini 만 쓰기로 했으면 Claude 로 넘기지 않는다: 변경 요청이면 안내만 하는 모드로 한 번 더, 그래도 안 되면 이유를 보여준다.
+      if (geminiOnly) {
+        if (!/시간 초과|응답 없음|오류/.test(free.reason)) {
+          const r = await runFreeAssistant(freeHistory, screenLine, ctx, request.signal, Math.min(Date.now() + 40_000, started + 55_000), false).catch(() => null);
+          if (r?.kind === "answer") return Response.json({ message: `${r.text}\n\n_실제 변경은 Claude 모드에서 요청하거나 캠페인 표 버튼으로 적용해 주세요._`, pendingActions: [], mixDrafts: r.mixDrafts, usage: r.usage, model: r.label });
+        }
+        return Response.json({ error: `Gemini가 답하지 못했어요 (${free.reason}). 잠시 후 다시 시도하거나 위에서 Claude로 바꿔 보세요.` }, { status: 502 });
+      }
+    } else if (geminiOnly && !freeLlmConfig()) {
+      return Response.json({ error: "Gemini 키(FREE_LLM_API_KEY)가 설정되지 않았어요. Claude로 바꿔 주세요." }, { status: 503 });
+    } else if (geminiOnly && (body.attachments || []).some((f) => f.kind !== "text")) {
+      return Response.json({ error: "PDF·이미지는 Claude만 읽을 수 있어요. 위에서 Claude로 바꿔 보내 주세요." }, { status: 400 });
     }
     // Claude를 쓸 수 없으면(키 없음·한도 초과) 무료 모델이 계산·안내까지만 하고 답한다.
     const freeOnly = async (note: string) => {
@@ -154,4 +173,41 @@ async function handle(request: Request) {
     }
     return Response.json({ error: friendlyError(error) }, { status: 500 });
   }
+}
+
+const wonFmt = (v: number) => `${Math.round(v).toLocaleString("ko-KR")}원`;
+const CH: Record<string, string> = { naver_sa: "네이버 SA", naver_gfa: "네이버 GFA", meta: "Meta", google_ads: "Google Ads", all: "전체" };
+/** 첨부 표 → 믹스 초안 + 미리보기(기존 믹스 대비 변경). 표를 못 읽으면 null(→ AI 경로) */
+function mixImportPreview(files: Array<{ name: string; data: string }>, text: string, ctx: AssistantContext) {
+  for (const f of files) {
+    const lines = parseMixAttachment(String(f.data || ""));
+    if (!lines?.length) continue;
+    if (!ctx.advertiserId) return { error: "광고주를 먼저 선택해 주세요." };
+    const month = detectMonth([text, f.name], new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date()));
+    const existing = ctx.mixes?.find((m) => m.month === month);
+    const draft = sanitizeMix({ id: existing?.id, advertiserId: ctx.advertiserId, month, status: existing?.status || "draft", targetRoas: existing?.targetRoas || 0,
+      notes: existing?.notes || `${f.name}에서 가져온 ${month} 믹스`, channels: {}, lines, review: existing?.review, createdAt: existing?.createdAt });
+    if (!draft) continue;
+    const kept = draft.lines || [];
+    const total = kept.reduce((s, l) => s + l.budget, 0);
+    const sum = (key: (l: (typeof kept)[number]) => string) => { const m = new Map<string, number>(); for (const l of kept) m.set(key(l), (m.get(key(l)) || 0) + l.budget); return [...m.entries()]; };
+    const out: string[] = [`**${f.name}** 표를 그대로 읽어 **${month} 믹스 초안**을 만들었어요 (AI 미사용 · 금액 그대로).`, "",
+      `라인 ${kept.length}개 · 합계 **${wonFmt(total)}**${lines.length > kept.length ? ` · ${lines.length - kept.length}개 라인은 60개 제한으로 빠짐` : ""}`, "",
+      "| 믹스구분 | 금액 |", "|---|---:|", ...sum(lineGroup).map(([g, v]) => `| ${g} | ${wonFmt(v)} |`), "",
+      "| 매체 | 금액 |", "|---|---:|", ...sum((l) => CH[l.channel] || l.channel).map(([c, v]) => `| ${c} | ${wonFmt(v)} |`)];
+    if (existing?.lines?.length) {
+      const d = diffLines(existing.lines, kept);
+      const before = existing.lines.reduce((s, l) => s + l.budget, 0);
+      out.push("", `**지금 저장된 ${month} 믹스 대비** (기존 ${wonFmt(before)} → ${wonFmt(total)}, ${total - before >= 0 ? "+" : ""}${wonFmt(total - before)})`);
+      if (d.changed.length) out.push("", "| 바뀐 라인 | 기존 | 새 금액 | 차이 |", "|---|---:|---:|---:|", ...d.changed.slice(0, 40).map(({ line, before: b }) => `| ${lineGroup(line)} · ${line.name} | ${wonFmt(b)} | ${wonFmt(line.budget)} | ${line.budget - b >= 0 ? "+" : ""}${wonFmt(line.budget - b)} |`));
+      if (d.added.length) out.push("", `새 라인 ${d.added.length}개: ${d.added.slice(0, 15).map((l) => `${l.name}(${wonFmt(l.budget)})`).join(", ")}${d.added.length > 15 ? " …" : ""}`);
+      if (d.removed.length) out.push("", `없어지는 라인 ${d.removed.length}개: ${d.removed.slice(0, 15).map((l) => `${l.name}(${wonFmt(l.budget)})`).join(", ")}${d.removed.length > 15 ? " …" : ""}`);
+      if (!d.changed.length && !d.added.length && !d.removed.length) out.push("", "금액이 바뀐 라인은 없어요.");
+    }
+    const noKw = kept.filter((l) => !l.keywords.length);
+    if (noKw.length) out.push("", `캠페인 키워드가 없는 라인 ${noKw.length}개는 믹스 화면에서 '빈 키워드 AI 추천'으로 채울 수 있어요.`);
+    out.push("", "아래 카드에서 **믹스로 저장**을 눌러야 반영돼요. 저장 전까지는 아무것도 바뀌지 않아요.");
+    return { message: out.join("\n"), pendingActions: [], mixDrafts: [draft], usage: { input: 0, output: 0, cached: 0 }, model: "표 가져오기" };
+  }
+  return null;
 }

@@ -205,3 +205,43 @@ function splitTable(text: string): string[][] {
   if (cell || row.length) { row.push(cell); rows.push(row); }
   return rows;
 }
+
+// ---- 첨부 표 → 믹스 초안 (AI 없이) ----
+/** 엑셀 변환본(## 시트: 이름 단위)이나 CSV 에서 믹스 표를 찾는다 */
+export function parseMixAttachment(text: string): MixLine[] | null {
+  const sections = text.includes("## 시트:") ? text.split(/^## 시트:.*$/m).map((s) => s.trim()).filter(Boolean) : [text];
+  let best: MixLine[] | null = null;
+  for (const section of sections) {
+    const lines = parseMixTable(section);
+    if (lines && (!best || lines.length > best.length)) best = lines;
+  }
+  return best;
+}
+
+/** 메시지·파일 이름에서 대상 월(YYYY-MM)을 찾는다. 없으면 이번 달 */
+export function detectMonth(texts: string[], today: string): string {
+  const [ty, tm] = today.split("-").map(Number);
+  // 메시지 → 파일 이름 순서로, 각각 'YYYY-MM' 다음 'N월'을 찾는다
+  for (const t of texts) {
+    const full = t.match(/(20\d\d)\s*[-._년]\s*(\d{1,2})(?!\d)/);
+    if (full && Number(full[2]) >= 1 && Number(full[2]) <= 12) return `${full[1]}-${String(full[2]).padStart(2, "0")}`;
+    const m = t.match(/(\d{1,2})\s*월/);
+    if (m && Number(m[1]) >= 1 && Number(m[1]) <= 12) {
+      const mm = Number(m[1]);
+      const year = mm < tm - 6 ? ty + 1 : mm > tm + 6 ? ty - 1 : ty;
+      return `${year}-${String(mm).padStart(2, "0")}`;
+    }
+  }
+  return today.slice(0, 7);
+}
+
+const lineKey = (l: MixLine) => `${l.channel}|${norm(lineGroup(l))}|${norm(l.name)}`;
+/** 기존 라인 대비 바뀐 점 */
+export function diffLines(before: MixLine[] | undefined, after: MixLine[]) {
+  const prev = new Map((before || []).map((l) => [lineKey(l), l]));
+  const next = new Map(after.map((l) => [lineKey(l), l]));
+  const changed = after.filter((l) => prev.has(lineKey(l)) && prev.get(lineKey(l))!.budget !== l.budget).map((l) => ({ line: l, before: prev.get(lineKey(l))!.budget }));
+  const added = after.filter((l) => !prev.has(lineKey(l)));
+  const removed = (before || []).filter((l) => !next.has(lineKey(l)));
+  return { changed, added, removed };
+}
