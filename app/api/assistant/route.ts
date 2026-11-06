@@ -55,16 +55,19 @@ async function handle(request: Request) {
     // 1) 조회 질문은 무료 모델이 먼저 답한다. 변경 요청·첨부·오류면 Claude로 넘긴다.
     const screenLine = `[현재 화면] 광고주: ${ctx.advertiserName || "미선택"} · 매핑 계정 ${ctx.accountKeys.length}개 · 오늘(KST): ${seoulDate()}`;
     let escalated = "";
-    if (!cont && freeLlmConfig() && !(body.attachments || []).length && body.mode !== "claude") {
-      const free = await runFreeAssistant(history, screenLine, ctx, request.signal, started + 40_000).catch((e) => ({ kind: "escalate" as const, reason: String(e).slice(0, 120) }));
+    // 표·텍스트 첨부(CSV·엑셀 변환본)는 무료 모델에도 넣어 준다. PDF·이미지는 Claude만 읽는다.
+    const textFiles = (body.attachments || []).filter((f) => f.kind === "text");
+    const freeHistory = textFiles.length && history.length ? [...history.slice(0, -1), { ...history[history.length - 1], content: `${textFiles.map((f) => `[첨부 파일: ${f.name}]\n${String(f.data).slice(0, 40_000)}`).join("\n\n")}\n\n${history[history.length - 1].content}` }] : history;
+    if (!cont && freeLlmConfig() && !(body.attachments || []).some((f) => f.kind !== "text") && body.mode !== "claude") {
+      const free = await runFreeAssistant(freeHistory, screenLine, ctx, request.signal, started + 40_000).catch((e) => ({ kind: "escalate" as const, reason: String(e).slice(0, 120) }));
       if (request.signal.aborted) return new Response(null, { status: 499 });
-      if (free.kind === "answer") return Response.json({ message: free.text, pendingActions: [], mixDrafts: [], usage: free.usage, model: free.label });
+      if (free.kind === "answer") return Response.json({ message: free.text, pendingActions: [], mixDrafts: free.mixDrafts, usage: free.usage, model: free.label });
       escalated = free.reason;
     }
     // Claude를 쓸 수 없으면(키 없음·한도 초과) 무료 모델이 계산·안내까지만 하고 답한다.
     const freeOnly = async (note: string) => {
-      const r = await runFreeAssistant(history, screenLine, ctx, request.signal, Math.min(Date.now() + 40_000, started + 55_000), false).catch(() => null);
-      if (r?.kind === "answer") return Response.json({ message: `${r.text}\n\n_${note}_`, pendingActions: [], mixDrafts: [], usage: r.usage, model: r.label });
+      const r = await runFreeAssistant(freeHistory, screenLine, ctx, request.signal, Math.min(Date.now() + 40_000, started + 55_000), false).catch(() => null);
+      if (r?.kind === "answer") return Response.json({ message: `${r.text}\n\n_${note}_`, pendingActions: [], mixDrafts: r.mixDrafts, usage: r.usage, model: r.label });
       return null;
     };
     if (!cont && freeLlmConfig()) freeFallback = freeOnly;
