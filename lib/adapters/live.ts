@@ -197,7 +197,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   return settleAccounts(accounts, async (account) => {
     const offset = await metaBudgetOffset(account.id);
     const body = await metaGet(`act_${account.id}/campaigns`, {
-      fields: `id,name,status,effective_status,stop_time,objective,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values,catalog_segment_actions,catalog_segment_value}`,
+      fields: `id,name,status,effective_status,stop_time,objective,daily_budget,lifetime_budget,budget_remaining,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values,catalog_segment_actions,catalog_segment_value}`,
       limit: "500",
     });
     return (body.data || []).filter((row: any) => includeOff || row.status === "ACTIVE").map((row: any) => {
@@ -206,6 +206,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       const revenue = { value: metaRev(insight) };
       const spend = num(insight.spend);
       return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / offset,
+        ...(num(row.lifetime_budget) ? { lifetimeBudget: num(row.lifetime_budget) / offset, budgetRemaining: num(row.budget_remaining) / offset } : {}),
         status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
         accountId: account.id, accountName: account.name,
         active: row.effective_status === "ACTIVE" && (!row.stop_time || new Date(row.stop_time).getTime() > Date.now()), rawStatus: row.effective_status || row.status, product: productOf(row.objective) };
@@ -1061,9 +1062,9 @@ export const liveAdapter = {
       return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdgroupId), campaignId, channel, name: row.name, dailyBudget: num(row.dailyBudget), status: row.userLock ? "off" : "on", active: !row.userLock && (!row.status || row.status === "ELIGIBLE") }));
     }
     if (channel === "meta") {
-      const body = await metaGet(`${key.id}/adsets`, { fields: "id,name,status,effective_status,end_time,daily_budget", limit: "500" });
+      const body = await metaGet(`${key.id}/adsets`, { fields: "id,name,status,effective_status,end_time,daily_budget,lifetime_budget,budget_remaining", limit: "500" });
       const offset = await metaBudgetOffset(key.account);
-      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), campaignId, channel, name: row.name, dailyBudget: num(row.daily_budget) / offset, status: asStatus(row.status),
+      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), campaignId, channel, name: row.name, dailyBudget: num(row.daily_budget) / offset, ...(num(row.lifetime_budget) ? { lifetimeBudget: num(row.lifetime_budget) / offset, budgetRemaining: num(row.budget_remaining) / offset } : {}), status: asStatus(row.status),
         active: row.effective_status === "ACTIVE" && (!row.end_time || new Date(row.end_time).getTime() > Date.now()) }));
     }
     if (channel === "google_ads") {

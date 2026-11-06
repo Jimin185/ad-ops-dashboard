@@ -20,6 +20,9 @@ export type Campaign = {
   channel: Channel;
   name: string;
   dailyBudget: number;
+  /** 총예산(기간 예산) 캠페인·광고그룹: 총액과 남은 금액 */
+  lifetimeBudget?: number;
+  budgetRemaining?: number;
   status: EntityStatus;
   spend: number;
   conversions: number;
@@ -40,6 +43,9 @@ export type AdGroup = {
   channel: Channel;
   name: string;
   dailyBudget: number;
+  /** 총예산(기간 예산) 캠페인·광고그룹: 총액과 남은 금액 */
+  lifetimeBudget?: number;
+  budgetRemaining?: number;
   status: EntityStatus;
   active?: boolean;
 };
