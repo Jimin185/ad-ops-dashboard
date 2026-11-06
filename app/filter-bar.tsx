@@ -2,7 +2,7 @@
 
 import type { AdAccount, Campaign, Channel } from "@/lib/types";
 import type { MixLine } from "@/lib/mix";
-import { matchMix } from "@/lib/mix";
+import { lineGroup, matchMix } from "@/lib/mix";
 import { CHANNEL_LABEL, CHANNEL_ORDER } from "./report-view";
 
 export type Filter = { channel: Channel | ""; account: string; product: string; line: string };
@@ -25,7 +25,14 @@ export function lineCampaignIds(lines: MixLine[] | undefined, campaigns: Campaig
   const map = new Map<string, Set<string>>();
   if (!lines?.length) return map;
   const { results } = matchMix(lines, campaigns);
-  for (const r of results) map.set(r.line.id, new Set(r.campaigns.map((c) => c.id)));
+  for (const r of results) {
+    map.set(r.line.id, new Set(r.campaigns.map((c) => c.id)));
+    // 믹스구분 전체 선택용: "group:이름" 키에 그 구분의 캠페인을 모은다
+    const key = `group:${lineGroup(r.line)}`;
+    const set = map.get(key) || new Set<string>();
+    r.campaigns.forEach((c) => set.add(c.id));
+    map.set(key, set);
+  }
   return map;
 }
 
@@ -83,7 +90,10 @@ export function FilterBar({ value, onChange, accountKeys, accounts, campaigns, l
         <option value="">전체 ({productOptions.length})</option>{productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
       </select></label>
       <label><span>운영믹스</span><select value={value.line} disabled={!lineOptions.length} onChange={(e) => set({ line: e.target.value })}>
-        <option value="">전체</option>{lineOptions.map((l) => <option key={l.id} value={l.id}>{l.name || "(이름 없음)"}</option>)}
+        <option value="">전체</option>{[...new Set(lineOptions.map(lineGroup))].map((g) => <optgroup key={g} label={g}>
+          <option value={`group:${g}`}>▸ {g} 전체</option>
+          {lineOptions.filter((l) => lineGroup(l) === g).map((l) => <option key={l.id} value={l.id}>{l.name || "(이름 없음)"}</option>)}
+        </optgroup>)}
       </select>{!lineOptions.length && <small className="filter-note">믹스 통합 상태</small>}</label>
       {(value.channel || value.account || value.product || value.line) && <button className="link-button" onClick={() => onChange({ channel: "", account: "", product: "", line: "" })}>초기화</button>}
     </div>
