@@ -6,6 +6,7 @@ export type MixChannelPlan = { budget: number; targetRoas: number; note?: string
  * 믹스 라인: 한 광고주 안의 운영 단위(예: "B2C 전환", "아이책상 기획전").
  * 캠페인 연결은 이름 키워드 규칙 + 직접 지정(campaignIds)으로 코드가 계산한다 (LLM 불필요).
  */
+export type MixPeriod = { from: number; to: number; budget: number };
 export type MixLine = {
   id: string;
   name: string;
@@ -13,6 +14,8 @@ export type MixLine = {
   group?: string;
   /** 원본 믹스 행의 칸(열 이름, 값) — 믹스 표를 원래 모양대로 보여줄 때 쓴다 */
   source?: Array<[string, string]>;
+  /** 같은 캠페인인데 기간별로 예산이 다를 때(예: 1~4일 100만, 5~30일 500만). 날짜는 그 달의 일(day). budget 은 구간 합계 */
+  periods?: MixPeriod[];
   channel: Channel | "all";
   budget: number;
   targetRoas: number;
@@ -49,6 +52,59 @@ export const lineGroup = (line: Pick<MixLine, "group" | "name">) => line.group |
 /** 라인에 나온 순서대로 믹스구분 목록 */
 export const lineGroups = (lines: MixLine[] | undefined) => [...new Set((lines || []).map(lineGroup))];
 
+function sanitizePeriods(value: unknown): MixPeriod[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.map((p: any) => ({ from: Math.max(1, Math.min(31, Math.round(Number(p?.from) || 1))), to: Math.max(1, Math.min(31, Math.round(Number(p?.to) || 31))), budget: Math.max(0, Math.round(Number(p?.budget) || 0)) }))
+    .map((p) => p.from > p.to ? { ...p, from: p.to, to: p.from } : p).sort((a, b) => a.from - b.from).slice(0, 12);
+  return out.length ? out : undefined;
+}
+
+/** '11.1~11.4', '11/5-11/30', '2026.11.16 ~ 2026.11.23', '1~4일' → { from, to } (그 달의 일) */
+export function parsePeriod(text: string): { from: number; to: number } | null {
+  const t = String(text || "").replace(/\s+/g, "");
+  const md = t.match(/(?:\d{4}[./-])?(\d{1,2})[./-](\d{1,2})\.?[~∼\-–—](?:\d{4}[./-])?(?:(\d{1,2})[./-])?(\d{1,2})/);
+  if (md) { const from = Number(md[2]), to = Number(md[4]); if (from >= 1 && to >= 1 && from <= 31 && to <= 31) return { from, to: md[3] && Number(md[3]) !== Number(md[1]) ? 31 : to }; }
+  const d = t.match(/^(\d{1,2})일?[~∼\-–—](\d{1,2})일?$/);
+  if (d) return { from: Number(d[1]), to: Number(d[2]) };
+  return null;
+}
+const PERIOD_COL = /기간|일정|period|날짜|집행일/i;
+/** 같은 믹스구분·매체·이름(키워드)인데 기간만 다른 행들을 한 라인의 기간 구간으로 합친다 */
+export function mergePeriodLines(lines: MixLine[]): MixLine[] {
+  const out: Array<MixLine & { __period?: { from: number; to: number } }> = [];
+  const keyOf = (l: MixLine) => [lineGroup(l), l.channel, norm(l.name), l.keywords.map(norm).sort().join(",")].join("|");
+  for (const line of lines) {
+    const periodText = line.source?.find(([k]) => PERIOD_COL.test(k))?.[1] || "";
+    const period = parsePeriod(periodText);
+    const prev = period ? out.find((o) => keyOf(o) === keyOf(line) && (o.periods?.length || o.__period)) : undefined;
+    if (prev && period) {
+      const base: MixPeriod[] = prev.periods?.length ? prev.periods : [{ ...(prev.__period as { from: number; to: number }), budget: prev.budget }];
+      prev.periods = [...base, { ...period, budget: line.budget }].sort((a, b) => a.from - b.from);
+      prev.budget = prev.periods.reduce((s, p) => s + p.budget, 0);
+      prev.source = prev.source?.map(([k, v]) => PERIOD_COL.test(k) ? [k, `${v} / ${periodText}`] as [string, string] : [k, v]);
+      continue;
+    }
+    out.push(period ? Object.assign({ ...line }, { __period: period }) : line);
+  }
+  // 한 행만 있어도 기간이 한 달 전체가 아니면(예: 기획전 16~23일) 그 구간으로 페이스를 잡는다
+  return out.map(({ __period, ...l }: any) => (!l.periods && __period && !(__period.from === 1 && __period.to >= 28) ? { ...l, periods: [{ ...__period, budget: l.budget }] } : l) as MixLine);
+}
+
+/** 오늘(그 달의 day)까지 이 라인이 썼어야 할 금액 — 기간 구간이 있으면 구간별로, 없으면 한 달 균등 */
+export function expectedSpend(line: Pick<MixLine, "budget" | "periods">, day: number, daysInMonth: number) {
+  if (!line.periods?.length) return line.budget * Math.min(1, day / daysInMonth);
+  return line.periods.reduce((s, p) => s + p.budget * Math.max(0, Math.min(1, (day - p.from + 1) / (p.to - p.from + 1))), 0);
+}
+/** 지금 구간과 그 구간에 맞춘 일예산(마크업 등은 고려 안 함: 라인 금액 기준) */
+export function periodAdvice(line: Pick<MixLine, "budget" | "periods">, spend: number, day: number) {
+  const cur = line.periods?.find((p) => day >= p.from && day <= p.to);
+  if (!cur || !line.periods) return null;
+  const upToCur = line.periods.filter((p) => p.from <= cur.from).reduce((s, p) => s + p.budget, 0);
+  const daysLeft = cur.to - day + 1;
+  return { period: cur, daily: Math.max(0, (upToCur - spend) / daysLeft), daysLeft };
+}
+export const periodLabel = (p: MixPeriod, month?: string) => `${month ? `${Number(month.slice(5))}/` : ""}${p.from}~${month ? `${Number(month.slice(5))}/` : ""}${p.to}`;
+
 function sanitizeSource(value: unknown): Array<[string, string]> | undefined {
   if (!Array.isArray(value)) return undefined;
   const out = value.map((v: any) => Array.isArray(v) ? [String(v[0] ?? ""), String(v[1] ?? "")] : [String(v?.column ?? ""), String(v?.value ?? "")])
@@ -67,6 +123,7 @@ export function sanitizeLines(input: unknown): MixLine[] {
     targetRoas: Math.max(0, Math.round(Number(line?.targetRoas) || 0)),
     note: line?.note ? String(line.note).slice(0, 300) : undefined,
     source: sanitizeSource(line?.source),
+    periods: sanitizePeriods(line?.periods),
     keywords: words(line?.keywords),
     excludes: words(line?.excludes),
     campaignIds: (Array.isArray(line?.campaignIds) ? line.campaignIds : []).map(String).slice(0, 200),
@@ -205,7 +262,7 @@ export function parseMixTable(text: string): MixLine[] | null {
       keywords: col.keywords >= 0 ? words(cells[col.keywords]) : [], excludes: col.excludes >= 0 ? words(cells[col.excludes]) : [], campaignIds: [],
     } as MixLine;
   }).filter((line): line is MixLine => !!line && !!line.name && line.budget > 0 && !/^(합계|총계|total|sum)$/i.test(line.name));
-  return lines.length ? lines : null;
+  return lines.length ? mergePeriodLines(lines) : null;
 }
 
 /** 탭 구분이면 탭으로, 아니면 따옴표를 지키는 CSV 로 나눈다 */

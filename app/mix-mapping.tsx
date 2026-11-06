@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Campaign, Channel } from "@/lib/types";
-import { channelsFromLines, lineGroup, lineMatches, matchMix, parseMixAttachment, type MediaMix, type MixLine } from "@/lib/mix";
+import { channelsFromLines, expectedSpend, lineGroup, lineMatches, matchMix, mergePeriodLines, parseMixAttachment, periodAdvice, type MediaMix, type MixLine, type MixPeriod } from "@/lib/mix";
 import { CHANNEL_LABEL, periodRange } from "./report-view";
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
@@ -28,7 +28,9 @@ function ruleKeywords(lines: MixLine[], campaigns: Campaign[]) {
  * 믹스 매핑: 믹스(엑셀·CSV·붙여넣기)만 넣으면 라인을 만들고 캠페인을 추론해 붙인다.
  * 잘못 붙은 캠페인은 끌어서 다른 라인이나 미분류로 옮긴다(직접 지정이 키워드보다 우선).
  */
-export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
+export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclude, excludedCount = 0 }: {
+  onExclude?: (campaign: Campaign) => void;
+  excludedCount?: number;
   advertiserId: string;
   mixes: MediaMix[];
   campaigns: Campaign[];
@@ -62,6 +64,18 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
   const unassignedSpend = unassigned.reduce((s, c) => s + c.spend, 0);
 
   function change(next: MixLine[]) { setLines(next); setDirty(true); }
+  const dim = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+  const today = Number(periodRange("this_month").until.slice(8, 10));
+  const day = month === thisMonth ? today : month < thisMonth ? dim : 0;
+  /** 기간별 예산 편집: "1-4 1000000, 5-30 5000000" (빈 값이면 기간 나누기 해제) */
+  function editPeriods(line: MixLine) {
+    const current = (line.periods || []).map((p) => `${p.from}-${p.to} ${p.budget}`).join(", ");
+    const text = window.prompt(`'${line.name}' 기간별 예산 (그 달의 일 기준)\n예: 1-4 1000000, 5-30 5000000\n비우면 한 달 전체 ${line.budget.toLocaleString()}원으로 돌아가요.`, current || `1-${dim} ${line.budget}`);
+    if (text === null) return;
+    const periods: MixPeriod[] = text.split(/[,\n]/).map((part) => part.trim().match(/^(\d{1,2})\s*[-~]\s*(\d{1,2})\s*[: ]\s*([\d,]+)/)).filter(Boolean).map((m) => ({ from: Number(m![1]), to: Number(m![2]), budget: Number(m![3].replace(/,/g, "")) }));
+    if (text.trim() && !periods.length) { window.alert("형식을 읽지 못했어요. 예: 1-4 1000000, 5-30 5000000"); return; }
+    change(lines.map((l) => l.id !== line.id ? l : periods.length ? { ...l, periods: periods.sort((a, b) => a.from - b.from), budget: periods.reduce((s, p) => s + p.budget, 0) } : { ...l, periods: undefined }));
+  }
 
   // ---- 믹스 넣기 → 라인 만들기 → 캠페인 추론 ----
   async function aiParse(payload: { text?: string; lines?: MixLine[] }) {
@@ -81,7 +95,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
       let how = "표를 그대로 읽었어요";
       if (!next?.length) {
         setBusy("AI가 믹스를 라인으로 정리하는 중…");
-        next = (await aiParse({ text })).lines;
+        next = mergePeriodLines((await aiParse({ text })).lines);
         how = "AI가 믹스를 정리했어요";
       }
       if (!next.length) throw new Error("믹스에서 예산 라인을 찾지 못했어요.");
@@ -153,9 +167,10 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
   }
 
   const MoveMenu = ({ c, from }: { c: Campaign; from: string }) => (
-    <select className="mini-select" value="" aria-label="라인 이동" onChange={(e) => e.target.value && move(c, e.target.value)}>
+    <select className="mini-select" value="" aria-label="라인 이동" onChange={(e) => { const v = e.target.value; if (!v) return; if (v === "__exclude__") onExclude?.(c); else move(c, v); }}>
       <option value="">이동…</option>
       {from !== UNASSIGNED && <option value={UNASSIGNED}>미분류로 빼기</option>}
+      {onExclude && <option value="__exclude__">예산에서 제외(숨김)…</option>}
       {groups.map((g) => <optgroup key={g} label={g}>{lines.filter((l) => lineGroup(l) === g && l.id !== from).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</optgroup>)}
     </select>
   );
@@ -179,7 +194,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
           <button className="secondary" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="이전 달">‹</button>
           <b>{month}</b>
           <button className="secondary" onClick={() => setMonth(shiftMonth(month, 1))} aria-label="다음 달">›</button>
-          <span className="viz-sub">{lines.length ? `라인 ${lines.length}개 · 캠페인 ${linked}개 연결 · 빈 라인 ${emptyLines}개 · 미분류 ${unassigned.length}개(${won.format(unassignedSpend)})` : "아직 믹스가 없어요"}</span>
+          <span className="viz-sub">{excludedCount ? `예산 제외 ${excludedCount}개 숨김 · ` : ""}{lines.length ? `라인 ${lines.length}개 · 캠페인 ${linked}개 연결 · 빈 라인 ${emptyLines}개 · 미분류 ${unassigned.length}개(${won.format(unassignedSpend)})` : "아직 믹스가 없어요"}</span>
         </div>
         <div className="mix-actions">
           {lines.length > 0 && <nav className="segmented small"><button className={layout === "table" ? "active" : ""} onClick={() => setLayout("table")}>믹스 표</button><button className={layout === "board" ? "active" : ""} onClick={() => setLayout("board")}>라인 띠</button></nav>}
@@ -233,8 +248,16 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
                     {showName && <td><b>{r.line.name}</b></td>}
                     {cols.map((k) => { const v = cell(r, k); same = same && cell(prevR, k) === v; return <td key={k} className={same ? "merged" : ""}>{same ? "" : v}</td>; })}
                     <td className="map-col-campaigns">{list.length ? <ul className="map-list">{list.map((c) => chip(c, r.line.id, r.line.campaignIds.includes(c.id)))}</ul> : <small className="map-empty">연결 없음 — 끌어다 놓으세요</small>}</td>
-                    <td className="num">{won.format(r.line.budget)}</td>
-                    <td className="num"><b>{compact(r.spend)}</b>{r.line.budget ? <><div className="pace-track"><div className={`pace-fill ${ratio > 1 ? "over" : ""}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} /></div><small className="viz-sub">{Math.round(ratio * 100)}%</small></> : null}</td>
+                    <td className="num"><button className="link-button budget-link" title="기간별로 예산이 다르면 눌러서 나누세요" onClick={() => editPeriods(r.line)}>{won.format(r.line.budget)}</button>
+                      {r.line.periods?.length ? <small className="viz-sub period-note">{r.line.periods.map((p) => `${p.from}~${p.to}일 ${compact(p.budget)}`).join(" + ")}</small> : null}</td>
+                    <td className="num">{(() => {
+                      const expected = day ? expectedSpend(r.line, day, dim) : 0;
+                      const tone = !r.line.budget || !day ? "" : r.spend > expected * 1.15 ? "over" : r.spend < expected * 0.85 ? "under" : "ok";
+                      const advice = month === thisMonth ? periodAdvice(r.line, r.spend, day) : null;
+                      return <><b>{compact(r.spend)}</b>{r.line.budget ? <><div className="pace-track"><div className={`pace-fill ${tone}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} />{day ? <i style={{ left: `${Math.min(100, expected / r.line.budget * 100)}%` }} title={`오늘까지 계획 ${compact(expected)}`} /> : null}</div>
+                        <small className="viz-sub">{Math.round(ratio * 100)}%{day ? ` · 계획 ${compact(expected)}` : ""}</small></> : null}
+                        {advice && <small className="viz-sub period-note">지금 {advice.period.from}~{advice.period.to}일 구간 · 남은 {advice.daysLeft}일 하루 {compact(advice.daily)}</small>}</>;
+                    })()}</td>
                   </tr>;
                 })}</tbody>
                 <tfoot><tr><td colSpan={(showName ? 1 : 0) + cols.length + 1}><b>{g} 합계</b></td><td className="num"><b>{won.format(budget)}</b></td><td className="num"><b>{compact(spend)}</b></td></tr></tfoot>

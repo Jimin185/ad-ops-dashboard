@@ -388,3 +388,21 @@ body { background:#fff; color:#323232; }
 .map-table tr.empty .map-col-campaigns { background:#fdf3f2; }
 .map-table .map-chip { padding:2px 4px; }
 .map-table .pace-track { min-width:70px; margin:4px 0 2px; }
+/* 예약·예산 제외 */
+.modal-backdrop { position:fixed; inset:0; background:rgba(23,32,24,.35); z-index:40; display:flex; align-items:center; justify-content:center; padding:16px; }
+.modal { background:#fff; border-radius:16px; padding:20px; width:min(460px,100%); display:flex; flex-direction:column; gap:12px; box-shadow:0 24px 70px rgba(23,32,24,.25); }
+.modal-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; } .modal-row input[type=date] { margin-left:6px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; }
+.modal-actions { display:flex; justify-content:flex-end; gap:8px; }
+.modal-choices { display:grid; grid-template-columns:1fr 1fr; gap:8px; } .modal-choices button { display:flex; flex-direction:column; gap:4px; text-align:left; padding:12px; } .modal-choices small { color:var(--muted); font-weight:400; font-size:11px; }
+.schedule-button { border:1px solid var(--line); background:#fff; border-radius:8px; padding:3px 6px; font-size:12px; margin-left:4px; display:inline-flex; align-items:center; gap:3px; }
+.schedule-button.has { border-color:#f5a623; background:#fff7e8; } .schedule-button small { font-size:10px; font-weight:700; color:#a3670b; }
+.status-cell { display:inline-flex; align-items:center; white-space:nowrap; }
+.excluded-tag { display:inline-flex; gap:4px; align-items:center; margin-left:6px; font-size:10px; font-weight:700; color:#8a5a00; background:#fff3d6; border-radius:6px; padding:2px 6px; }
+.schedule-list { margin:8px 0; font-size:13px; } .schedule-list summary { cursor:pointer; font-weight:700; }
+.schedule-list ul { list-style:none; padding:0; margin:8px 0 0; display:flex; flex-direction:column; gap:4px; } .schedule-list li { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.schedule-alert { background:#fff7e8; border:1px solid #f5d18a; border-radius:12px; padding:10px 14px; margin-bottom:12px; font-size:13px; display:flex; flex-direction:column; gap:4px; }
+.schedule-alert ul { list-style:none; padding:0; margin:0; } .schedule-alert li.fail { color:#b42318; } .schedule-alert small { color:var(--muted); }
+.schedule-alert .link-button { align-self:flex-end; }
+.period-note { display:block; font-size:10px; margin-top:2px; white-space:normal; }
+.budget-link { font-weight:700; color:var(--ink); text-decoration:underline dotted; }
+.map-table .pace-track i { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--ink); }

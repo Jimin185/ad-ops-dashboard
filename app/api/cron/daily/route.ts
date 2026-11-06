@@ -4,6 +4,7 @@ import { cacheSet, kstToday } from "@/lib/cache";
 import { listAdvertisers, storageAvailable } from "@/lib/db";
 import { allAdvertiserAccountKeys, ensureMonthly } from "@/lib/monthly";
 import { withNaverSaAccounts } from "@/lib/naver-sa-registry";
+import { runDueSchedules } from "@/lib/schedule-runner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,8 @@ export async function GET(request: Request) {
       if (!storageAvailable()) return Response.json({ error: "Supabase 연결이 필요합니다." }, { status: 503 });
       const advertisers = await listAdvertisers();
       if (step === 0) {
+        // 밤사이 놓친 ON/OFF 예약이 있으면 아침에 한 번 더 처리
+        if (url.searchParams.get("retry") !== "1") log.push(`schedules=${(await runDueSchedules(8_000).catch(() => [])).length}`);
         const monthly = await ensureMonthly(await allAdvertiserAccountKeys(), 25_000);
         log.push(`monthly pending=${monthly.pending}`);
         if (monthly.pending) return next(url, 0, log);

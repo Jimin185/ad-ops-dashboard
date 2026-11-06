@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from "react";
 import type { Campaign, Channel } from "@/lib/types";
-import { lineGroup, lineMatches, matchMix, parseMixTable, type LineResult, type MixLine } from "@/lib/mix";
+import { expectedSpend, lineGroup, lineMatches, matchMix, parseMixTable, type LineResult, type MixLine } from "@/lib/mix";
 import { CHANNEL_LABEL, CHANNEL_ORDER } from "./report-view";
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
 const compact = (v: number) => v >= 100_000_000 ? `${(v / 100_000_000).toFixed(1)}억` : v >= 10_000 ? `${Math.round(v / 10_000).toLocaleString()}만` : Math.round(v).toLocaleString();
 const blankLine = (): MixLine => ({ id: crypto.randomUUID(), name: "", channel: "all", budget: 0, targetRoas: 0, keywords: [], excludes: [], campaignIds: [] });
 const isRunning = (c: Campaign) => c.active ?? c.status === "on";
+const daysInThisMonth = () => { const d = new Date(Date.now() + 9 * 3600_000); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); };
 
 /** 키워드가 없는 라인은 라인 이름 자체가 캠페인 이름에 들어 있으면 그걸 키워드로 쓴다 (AI 없이). */
 function autoKeywords(lines: MixLine[], campaigns: Campaign[]) {
@@ -127,14 +128,15 @@ export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentM
             <td><div className="pace-cell"><b>{compact(gSpend)}</b>{gBudget ? <small> / {compact(gBudget)}</small> : null}</div>{gBudget && isCurrentMonth ? <small className="viz-sub">소진 {Math.round(gSpend / gBudget * 100)}% · 경과 {Math.round(monthProgress * 100)}%</small> : null}</td>
             <td><b>{gSpend ? `${Math.round(gRoas)}%` : "–"}</b></td><td /></tr>,
           ...items.map(({ line, campaigns: list, spend, roas }) => {
-          const expected = line.budget * monthProgress;
+          const expected = line.periods?.length ? expectedSpend(line, Math.round(monthProgress * daysInThisMonth()), daysInThisMonth()) : line.budget * monthProgress;
           const pacing = expected ? spend / expected : 0;
           const pace = !line.budget || !isCurrentMonth ? "" : pacing > 1.15 ? "over" : pacing < 0.85 ? "under" : "ok";
           return [
             <tr key={line.id}>
               <td><input className="note-input group-input" value={line.group || ""} placeholder="믹스구분" title="믹스구분 (리포트를 이 단위로 묶어요)" onChange={(e) => update(line.id, { group: e.target.value || undefined })} /><input className="note-input" value={line.name} placeholder="라인 이름" onChange={(e) => update(line.id, { name: e.target.value })} /></td>
               <td><select className="mini-select" value={line.channel} onChange={(e) => update(line.id, { channel: e.target.value as Channel | "all" })}><option value="all">전체</option>{CHANNEL_ORDER.map((c) => <option key={c} value={c}>{CHANNEL_LABEL[c]}</option>)}</select></td>
-              <td><input className="num-input" inputMode="numeric" value={line.budget ? line.budget.toLocaleString() : ""} placeholder="0" onChange={(e) => update(line.id, { budget: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
+              <td>{line.periods?.length ? <span title="기간별 예산은 믹스 매핑 탭에서 바꿔요"><b>{line.budget.toLocaleString()}</b><small className="viz-sub period-note">{line.periods.map((p) => `${p.from}~${p.to}일 ${compact(p.budget)}`).join(" + ")}</small></span>
+                : <input className="num-input" inputMode="numeric" value={line.budget ? line.budget.toLocaleString() : ""} placeholder="0" onChange={(e) => update(line.id, { budget: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} />}</td>
               <td><input className="num-input short" inputMode="numeric" value={line.targetRoas || ""} placeholder="0" onChange={(e) => update(line.id, { targetRoas: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
               <td><input className="note-input" value={line.keywords.join(", ")} placeholder="캠페인 이름에 들어간 단어" onChange={(e) => update(line.id, { keywords: e.target.value.split(",").map((v) => v.trim()).filter(Boolean) })} />
                 {line.excludes.length ? <small className="exclude-hint" title={line.excludes.join(", ")}>제외 {line.excludes.length}개 <button className="link-button" onClick={() => update(line.id, { excludes: [] })}>초기화</button></small> : null}</td>
