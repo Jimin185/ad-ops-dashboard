@@ -151,16 +151,19 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
     finally { setBusy(""); }
   }
 
+  const MoveMenu = ({ c, from }: { c: Campaign; from: string }) => (
+    <select className="mini-select" value="" aria-label="라인 이동" onChange={(e) => e.target.value && move(c, e.target.value)}>
+      <option value="">이동…</option>
+      {from !== UNASSIGNED && <option value={UNASSIGNED}>미분류로 빼기</option>}
+      {groups.map((g) => <optgroup key={g} label={g}>{lines.filter((l) => lineGroup(l) === g && l.id !== from).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</optgroup>)}
+    </select>
+  );
   const chip = (c: Campaign, from: string, pinned?: boolean) => (
     <li key={c.id} className={`map-chip${isRunning(c) ? "" : " muted"}`} draggable onDragStart={(e) => { e.dataTransfer.setData("text/campaign-id", c.id); e.dataTransfer.effectAllowed = "move"; }} title={`${c.accountName || ""} · 끌어서 다른 라인으로 옮기세요`}>
       <span className={`channel ${c.channel}`}>{CHANNEL_LABEL[c.channel].replace("네이버 ", "")}</span>
       <span className="map-chip-name">{c.name}</span>
       <em>{c.spend ? compact(c.spend) : "–"}{pinned ? " · 📌" : ""}</em>
-      <select className="mini-select" value="" aria-label="라인 이동" onChange={(e) => e.target.value && move(c, e.target.value)}>
-        <option value="">이동…</option>
-        {from !== UNASSIGNED && <option value={UNASSIGNED}>미분류로 빼기</option>}
-        {groups.map((g) => <optgroup key={g} label={g}>{lines.filter((l) => lineGroup(l) === g && l.id !== from).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</optgroup>)}
-      </select>
+      <MoveMenu c={c} from={from} />
     </li>
   );
 
@@ -213,14 +216,19 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
               <div className="map-group-head"><b>{g}</b><span className="viz-sub">{compact(spend)} / {compact(budget)}</span></div>
               <div className="map-lines">{groupLines.map(({ line }) => {
                 const r = byLine.get(line.id)!;
-                return <div key={line.id} className={`map-line${dragOver === line.id ? " over" : ""}${r.campaigns.length ? "" : " empty"}`} {...dropProps(line.id)}>
-                  <div className="map-line-head">
+                const list = [...r.campaigns].sort((a, b) => b.spend - a.spend);
+                // 캠페인 1개이고 이름이 라인과 같으면 띠 하나로 합친다(띠 자체를 끌어서 옮김)
+                const single = list.length === 1 && list[0].name.replace(/\s+/g, "").toLowerCase().includes(line.name.replace(/\s+/g, "").toLowerCase()) ? list[0] : null;
+                return <div key={line.id} className={`map-line${dragOver === line.id ? " over" : ""}${list.length ? "" : " empty"}`} {...dropProps(line.id)}>
+                  <div className={`map-band${single ? " draggable" : ""}`} draggable={!!single} onDragStart={single ? (e) => { e.dataTransfer.setData("text/campaign-id", single.id); e.dataTransfer.effectAllowed = "move"; } : undefined} title={single ? "끌어서 다른 라인으로 옮기세요" : line.note || ""}>
                     <span className={`channel ${line.channel}`}>{line.channel === "all" ? "전체" : CHANNEL_LABEL[line.channel as Channel].replace("네이버 ", "")}</span>
-                    <b title={line.note || ""}>{line.name}</b>
-                    <span className="viz-sub">{compact(r.spend)} / {compact(line.budget)}</span>
+                    <b>{line.name}</b>
+                    {single && line.campaignIds.includes(single.id) ? <span title="직접 지정">📌</span> : null}
+                    <span className="map-amount">{compact(r.spend)} / {compact(line.budget)}</span>
+                    {single && <MoveMenu c={single} from={line.id} />}
                   </div>
-                  <ul className="map-list">{r.campaigns.sort((a, b) => b.spend - a.spend).map((c) => chip(c, line.id, line.campaignIds.includes(c.id)))}</ul>
-                  {!r.campaigns.length && <small className="viz-sub">연결된 캠페인 없음 — 미분류에서 끌어다 놓으세요{line.keywords.length ? ` (키워드: ${line.keywords.join(", ")})` : ""}</small>}
+                  {!single && list.length > 0 && <ul className="map-list sub">{list.map((c) => chip(c, line.id, line.campaignIds.includes(c.id)))}</ul>}
+                  {!list.length && <small className="map-empty">연결 없음 — 미분류에서 끌어다 놓으세요{line.keywords.length ? ` (키워드: ${line.keywords.join(", ")})` : ""}</small>}
                 </div>;
               })}</div>
             </div>;
