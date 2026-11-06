@@ -174,10 +174,28 @@ async function metaAccounts(): Promise<AdAccount[]> {
     return { id, channel: "meta" as const, name: row.name || `Meta ${id}` };
   }).filter((row) => !seen.has(row.id) && seen.add(row.id));
 }
+// Meta 예산 필드(daily_budget)는 통화의 최소 단위다. USD 같은 통화는 센트(÷100)지만
+// KRW·JPY 같은 소수점 없는 통화는 원 단위 그대로다(÷1). 계정 통화를 확인해 맞춘다.
+const META_ZERO_DECIMAL = new Set(["KRW", "JPY", "CLP", "COP", "CRC", "HUF", "ISK", "IDR", "PYG", "TWD", "VND"]);
+const metaOffsetMemo = new Map<string, number>();
+async function metaBudgetOffset(accountId: string): Promise<number> {
+  const id = String(accountId).replace(/^act_/, "");
+  if (metaOffsetMemo.has(id)) return metaOffsetMemo.get(id)!;
+  const cached = await cacheGet<string>(`meta-currency:${id}`);
+  let currency = cached?.value;
+  if (!currency) {
+    currency = String((await metaGet(`act_${id}`, { fields: "currency" }).catch(() => ({})) as any).currency || "KRW");
+    await cacheSet(`meta-currency:${id}`, currency, Date.now() + 30 * 86400_000);
+  }
+  const offset = META_ZERO_DECIMAL.has(currency.toUpperCase()) ? 1 : 100;
+  metaOffsetMemo.set(id, offset);
+  return offset;
+}
 async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
   const accounts = await metaAccounts();
   const { since, until } = monthRange();
   return settleAccounts(accounts, async (account) => {
+    const offset = await metaBudgetOffset(account.id);
     const body = await metaGet(`act_${account.id}/campaigns`, {
       fields: `id,name,status,effective_status,stop_time,objective,daily_budget,insights.time_range({"since":"${since}","until":"${until}"}){spend,actions,action_values,catalog_segment_actions,catalog_segment_value}`,
       limit: "500",
@@ -187,7 +205,7 @@ async function metaCampaigns(includeOff: boolean): Promise<Campaign[]> {
       const purchase = { value: metaConv(insight) };
       const revenue = { value: metaRev(insight) };
       const spend = num(insight.spend);
-      return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / 100,
+      return { id: packed("meta", account.id, row.id), channel: "meta" as const, name: row.name, dailyBudget: num(row.daily_budget) / offset,
         status: asStatus(row.status), spend, conversions: num(purchase?.value), roas: spend ? Math.round(num(revenue?.value) / spend * 100) : 0,
         accountId: account.id, accountName: account.name,
         active: row.effective_status === "ACTIVE" && (!row.stop_time || new Date(row.stop_time).getTime() > Date.now()), rawStatus: row.effective_status || row.status, product: productOf(row.objective) };
@@ -1044,7 +1062,8 @@ export const liveAdapter = {
     }
     if (channel === "meta") {
       const body = await metaGet(`${key.id}/adsets`, { fields: "id,name,status,effective_status,end_time,daily_budget", limit: "500" });
-      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), campaignId, channel, name: row.name, dailyBudget: num(row.daily_budget) / 100, status: asStatus(row.status),
+      const offset = await metaBudgetOffset(key.account);
+      return body.data.map((row: any) => ({ id: packed(channel, key.account, row.id), campaignId, channel, name: row.name, dailyBudget: num(row.daily_budget) / offset, status: asStatus(row.status),
         active: row.effective_status === "ACTIVE" && (!row.end_time || new Date(row.end_time).getTime() > Date.now()) }));
     }
     if (channel === "google_ads") {
@@ -1127,7 +1146,7 @@ export const liveAdapter = {
     }
     if (operation.channel === "meta") {
       if (operation.kind === "set_status") await metaPost(key.id, { status: operation.status === "on" ? "ACTIVE" : "PAUSED" });
-      else await metaPost(key.id, { daily_budget: Math.round(operation.dailyBudget * 100) });
+      else await metaPost(key.id, { daily_budget: Math.round(operation.dailyBudget * await metaBudgetOffset(key.account)) });
       return { success: true, changed: 1 };
     }
     if (operation.channel === "google_ads") {
