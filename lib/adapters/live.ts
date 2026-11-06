@@ -111,12 +111,35 @@ async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
     const stats = new Map<string, any>();
     try { for (const row of await naverStats(account.id, rows.map((r) => r.nccCampaignId), since, until, false)) stats.set(row.id, row); } catch { /* 통계 없음 */ }
     const contracts = await brandContracts();
+    // 브랜드검색/신제품검색 정액 계약을 API에서 받아 일할 계산한다 (수기 입력이 있으면 그게 우선).
+    // 계약은 광고그룹 단위라, 브랜드검색 캠페인의 광고그룹 ID로 합산한다.
+    const autoSpend = new Map<string, number>();
+    const brandRows = rows.filter((row) => (productOf(row.campaignTp) || "").includes("브랜드") && !contracts[packed("naver_sa", account.id, row.nccCampaignId)]);
+    if (brandRows.length) {
+      try {
+        const all = (await naverRequest("GET", "/ncc/brand-new/contracts", undefined, account.id)) as any[] || [];
+        const live = all.filter((c) => !c.cancelTm && !/CANCELED|DEFEATED|FAILED/.test(String(c.biddingStatus || "")));
+        const byAdgroup = new Map<string, any[]>();
+        for (const c of live) { const k = String(c.nccAdgroupId || ""); if (!byAdgroup.has(k)) byAdgroup.set(k, []); byAdgroup.get(k)!.push(c); }
+        if (byAdgroup.size) {
+          await Promise.all(brandRows.map(async (row) => {
+            const ags = (await naverRequest("GET", `/ncc/adgroups?nccCampaignId=${encodeURIComponent(row.nccCampaignId)}`, undefined, account.id).catch(() => [])) as any[];
+            const sum = ags.flatMap((g) => byAdgroup.get(String(g.nccAdgroupId)) || []).reduce((s, c) => {
+              const amount = num(c.paymentAmt) || num(c.contractAmt);
+              const from = String(c.exposureStartDt || c.contractStartDt || "").slice(0, 10), to = String(c.exposureEndDt || c.contractEndDt || "").slice(0, 10);
+              return from && to ? s + brandProratedSpend({ amount, since: from, until: to }, since, until) : s;
+            }, 0);
+            if (sum > 0) autoSpend.set(row.nccCampaignId, sum);
+          }));
+        }
+      } catch { /* 계약 API가 없는 계정은 수기 입력으로 */ }
+    }
     return rows.map((row) => {
       const s = stats.get(row.nccCampaignId) || {};
       const id = packed("naver_sa", account.id, row.nccCampaignId);
-      // 브랜드검색 정액 계약이 등록돼 있으면 일할 계산 금액을 소진으로 쓴다 (정액제는 리포트 소진이 0으로 잡힘)
+      // 브랜드검색 정액 계약: 수기 입력 > API 계약 일할 > 리포트 소진 (정액제는 리포트 소진이 0으로 잡힘)
       const contract = contracts[id];
-      const spend = contract ? brandProratedSpend(contract, since, until) : num(s.salesAmt);
+      const spend = contract ? brandProratedSpend(contract, since, until) : autoSpend.get(row.nccCampaignId) ?? num(s.salesAmt);
       return { id, channel: "naver_sa" as const, name: row.name,
         dailyBudget: num(row.dailyBudget), status: (row.userLock ? "off" : "on") as EntityStatus, spend, conversions: Math.round(num(s.ccnt)),
         roas: spend ? Math.round(num(s.convAmt) / spend * 100) : 0, accountId: account.id, accountName: account.name,
@@ -759,6 +782,41 @@ async function googleCreatives(accountId: string, since: string, until: string):
       spend: num(r.metrics?.costMicros) / 1e6, impressions: num(r.metrics?.impressions), clicks: num(r.metrics?.clicks),
       conversions: num(r.metrics?.conversions), revenue: num(r.metrics?.conversionsValue) };
   });
+}
+
+/**
+ * Meta 소재 교체 (이미지·랜딩). 크리에이티브는 수정 불가 객체라, 기존 스펙을 복사해
+ * 이미지 해시/링크만 바꾼 새 크리에이티브를 만들어 광고에 연결한다 (성과 지표는 광고 기준이라 유지됨).
+ */
+export async function metaReplaceCreative(accountId: string, adId: string, change: { imageBase64?: string; link?: string }) {
+  const ad = await metaGet(adId, { fields: "name,creative{id,name,object_story_spec,url_tags}" });
+  const spec = ad?.creative?.object_story_spec;
+  if (!spec) throw new Error("이 광고의 크리에이티브 구조를 읽지 못했어요 (카탈로그/다이내믹 소재는 아직 지원 전이에요).");
+  const next = JSON.parse(JSON.stringify(spec));
+  const link = next.link_data;
+  const video = next.video_data;
+  if (change.imageBase64) {
+    if (!link) throw new Error("이미지 교체는 이미지(링크형) 소재만 지원해요. 영상 소재는 영상 교체라 별도예요.");
+    const up = await metaPost(`act_${accountId}/adimages`, { bytes: change.imageBase64 });
+    const hash = up?.images ? (Object.values(up.images)[0] as any)?.hash : undefined;
+    if (!hash) throw new Error("이미지 업로드에 실패했어요.");
+    delete link.picture;
+    link.image_hash = hash;
+    if (Array.isArray(link.child_attachments)) link.child_attachments = link.child_attachments.map((c: any) => ({ ...c, picture: undefined, image_hash: hash }));
+  }
+  if (change.link) {
+    if (link) link.link = change.link;
+    const cta = (link || video)?.call_to_action;
+    if (cta?.value?.link) cta.value.link = change.link;
+    if (!link && !cta) throw new Error("이 소재에서 랜딩 링크 자리를 찾지 못했어요.");
+  }
+  const created = await metaPost(`act_${accountId}/adcreatives`, {
+    name: `${ad?.creative?.name || ad?.name || "creative"} · 수정 ${new Date().toISOString().slice(5, 10)}`,
+    object_story_spec: JSON.stringify(next), ...(ad?.creative?.url_tags ? { url_tags: ad.creative.url_tags } : {}),
+  });
+  if (!created?.id) throw new Error("새 크리에이티브 생성에 실패했어요.");
+  await metaPost(adId, { creative: JSON.stringify({ creative_id: created.id }) });
+  return { creativeId: String(created.id) };
 }
 
 export async function getCreativeReport(accountKeys: string[], since: string, until: string, force = false) {
