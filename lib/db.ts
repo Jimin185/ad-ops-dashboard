@@ -21,7 +21,9 @@ async function ready() {
     // 테이블이 모두 있고 RLS도 켜져 있으면 DDL을 건너뛴다. 매 콜드스타트마다 ALTER TABLE을 돌리면
     // 다른 긴 쿼리(월별 적재·크론)와 잠금이 걸려 광고주 목록 조회까지 멈출 수 있다.
     const TABLES = ["adops_advertisers", "adops_mixes", "adops_naver_sa", "adops_cache", "adops_monthly", "adops_monthly_done", "adops_board"];
-    const [{ ok }] = await db`select count(*) filter (where relrowsecurity) = ${TABLES.length} as ok from pg_class where relname in ${db(TABLES)} and relkind = 'r'`;
+    const [{ ok }] = await db`select
+      (select count(*) filter (where relrowsecurity) from pg_class where relname in ${db(TABLES)} and relkind = 'r') = ${TABLES.length}
+      and exists (select 1 from information_schema.columns where table_name = 'adops_mixes' and column_name = 'lines') as ok`;
     if (ok) return;
     await db`set local lock_timeout = '3s'`.catch(() => {});
     await db`create table if not exists adops_advertisers (
@@ -32,6 +34,8 @@ async function ready() {
       target_roas integer not null default 0, channels jsonb not null default '{}'::jsonb, notes text not null default '', review text,
       created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
       unique (advertiser_id, month))`;
+    // 믹스 라인(믹스구분·캠페인 연결·기간 예산)을 통째로 보존한다. 없으면 매핑 탭이 "아직 믹스가 없어요"로 비어 보인다.
+    await db`alter table adops_mixes add column if not exists lines jsonb`;
     await db`create table if not exists adops_naver_sa (
       customer_id text primary key, name text not null, sealed text not null, created_at timestamptz not null default now())`;
     await db`create table if not exists adops_cache (
@@ -61,6 +65,7 @@ async function ready() {
 const toMix = (row: any): MediaMix => ({
   id: row.id, advertiserId: row.advertiser_id, month: row.month, status: row.status, targetRoas: row.target_roas,
   channels: row.channels || {}, notes: row.notes || "", review: row.review || undefined,
+  lines: Array.isArray(row.lines) && row.lines.length ? row.lines : undefined,
   createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
 });
 
@@ -91,10 +96,10 @@ export async function listMixes(advertiserId?: string): Promise<MediaMix[]> {
 }
 export async function upsertMix(mix: MediaMix): Promise<MediaMix> {
   const db = await ready();
-  const [row] = await db`insert into adops_mixes (id, advertiser_id, month, status, target_roas, channels, notes, review)
-    values (${mix.id}, ${mix.advertiserId}, ${mix.month}, ${mix.status}, ${mix.targetRoas}, ${db.json(mix.channels as any)}, ${mix.notes}, ${mix.review || null})
+  const [row] = await db`insert into adops_mixes (id, advertiser_id, month, status, target_roas, channels, notes, review, lines)
+    values (${mix.id}, ${mix.advertiserId}, ${mix.month}, ${mix.status}, ${mix.targetRoas}, ${db.json(mix.channels as any)}, ${mix.notes}, ${mix.review || null}, ${mix.lines?.length ? db.json(mix.lines as any) : null})
     on conflict (advertiser_id, month) do update set status = excluded.status, target_roas = excluded.target_roas, channels = excluded.channels,
-      notes = excluded.notes, review = excluded.review, updated_at = now()
+      notes = excluded.notes, review = excluded.review, lines = excluded.lines, updated_at = now()
     returning *`;
   return toMix(row);
 }

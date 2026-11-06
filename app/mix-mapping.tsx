@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Campaign, Channel } from "@/lib/types";
+import type { Campaign, Channel, ChangeOperation } from "@/lib/types";
 import { channelsFromLines, expectedSpend, lineGroup, lineMatches, matchMix, mergePeriodLines, parseMixAttachment, periodAdvice, type MediaMix, type MixLine, type MixPeriod } from "@/lib/mix";
 import { CHANNEL_LABEL, periodRange } from "./report-view";
 
@@ -28,13 +28,15 @@ function ruleKeywords(lines: MixLine[], campaigns: Campaign[]) {
  * 믹스 매핑: 믹스(엑셀·CSV·붙여넣기)만 넣으면 라인을 만들고 캠페인을 추론해 붙인다.
  * 잘못 붙은 캠페인은 끌어서 다른 라인이나 미분류로 옮긴다(직접 지정이 키워드보다 우선).
  */
-export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclude, excludedCount = 0 }: {
+export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclude, onApplyOps, excludedCount = 0 }: {
   onExclude?: (campaign: Campaign) => void;
   excludedCount?: number;
   advertiserId: string;
   mixes: MediaMix[];
   campaigns: Campaign[];
   onSave: (mix: MediaMix) => Promise<void>;
+  /** 일예산 일괄 적용 (page의 applyOps — 성공분은 화면에도 반영됨) */
+  onApplyOps?: (ops: ChangeOperation[]) => Promise<void>;
 }) {
   const thisMonth = periodRange("this_month").month;
   const [month, setMonth] = useState(thisMonth);
@@ -166,6 +168,56 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
     finally { setBusy(""); }
   }
 
+  // ---- 예산 맞춰 일예산 일괄 세팅 ----
+  // 라인의 남은 예산(기간 예산이 있으면 지금 구간 기준)을 남은 일수로 나눠 연결 캠페인에 배분한다.
+  type BudgetRow = { campaign: Campaign; lineName: string; current: number; next: number; checked: boolean; note: string; warn: boolean };
+  const [plan, setPlan] = useState<BudgetRow[] | null>(null);
+  const [applyBusy, setApplyBusy] = useState(false);
+  const BIG = 500_000; // 일예산 경고 기준
+
+  function buildPlan() {
+    const daysLeft = Math.max(1, dim - day + 1);
+    const rows: BudgetRow[] = [];
+    for (const r of results) {
+      if (!r.line.budget) continue;
+      const advice = periodAdvice(r.line, r.spend, day);
+      const lineDaily = advice ? advice.daily : Math.max(0, r.line.budget - r.spend) / daysLeft;
+      const targets = r.campaigns.filter(isRunning);
+      if (!targets.length) continue;
+      // 배분: 이번 달 소진 비중대로, 소진이 없으면 균등
+      const spendSum = targets.reduce((s, c) => s + c.spend, 0);
+      for (const c of targets) {
+        const share = spendSum > 0 ? c.spend / spendSum : 1 / targets.length;
+        const next = Math.round(lineDaily * share / 100) * 100;
+        const current = c.dailyBudget || 0;
+        const unsupported = c.channel === "google_ads";
+        const exhausted = next < 100;
+        const warn = !unsupported && !exhausted && (next >= BIG || (current > 0 && next >= current * 10));
+        rows.push({
+          campaign: c, lineName: r.line.name, current, next, warn,
+          checked: !unsupported && !exhausted && next !== current,
+          note: unsupported ? "구글은 공유예산이라 미지원" : exhausted ? "남은 예산 없음 — OFF 검토" : next === current ? "현재와 동일" :
+            warn ? (next >= BIG ? `${won.format(BIG)} 이상 — 자릿수 확인!` : `현재의 ${Math.round(next / Math.max(current, 1))}배 — 확인 필요`) :
+            advice ? `${advice.period.from}~${advice.period.to}일 구간 · 남은 ${advice.daysLeft}일` : `남은 ${daysLeft}일 기준`,
+        });
+      }
+    }
+    if (!rows.length) { setNotice("일예산을 계산할 라인이 없어요. 예산이 있는 라인에 운영 중 캠페인을 연결해 주세요."); return; }
+    setPlan(rows.sort((a, b) => Number(b.checked) - Number(a.checked) || b.next - a.next));
+  }
+  async function applyPlan() {
+    if (!plan || !onApplyOps) return;
+    const picked = plan.filter((r) => r.checked && r.next > 0);
+    if (!picked.length) return;
+    const danger = picked.filter((r) => r.warn);
+    if (!window.confirm(`${picked.length}개 캠페인의 일예산을 바꿉니다.${danger.length ? `\n⚠️ 경고 표시된 ${danger.length}건이 포함돼 있어요 — 금액을 다시 확인했나요?` : ""}`)) return;
+    setApplyBusy(true);
+    try {
+      await onApplyOps(picked.map((r) => ({ kind: "update_budget", channel: r.campaign.channel, entityType: "campaign", id: r.campaign.id, dailyBudget: r.next })));
+      setPlan(null);
+    } finally { setApplyBusy(false); }
+  }
+
   const MoveMenu = ({ c, from }: { c: Campaign; from: string }) => (
     <select className="mini-select" value="" aria-label="라인 이동" onChange={(e) => { const v = e.target.value; if (!v) return; if (v === "__exclude__") onExclude?.(c); else move(c, v); }}>
       <option value="">이동…</option>
@@ -198,6 +250,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         </div>
         <div className="mix-actions">
           {lines.length > 0 && <nav className="segmented small"><button className={layout === "table" ? "active" : ""} onClick={() => setLayout("table")}>믹스 표</button><button className={layout === "board" ? "active" : ""} onClick={() => setLayout("board")}>라인 띠</button></nav>}
+          {lines.length > 0 && month === thisMonth && onApplyOps && <button className="secondary" disabled={!!busy || applyBusy} onClick={buildPlan}>일예산 맞추기</button>}
           <button className="secondary" onClick={() => setImportOpen(!importOpen)}>믹스 넣기</button>
           {!lines.length && mixes.find((m) => m.month === shiftMonth(month, -1))?.lines?.length ? <button className="secondary" onClick={() => change(mixes.find((m) => m.month === shiftMonth(month, -1))!.lines!.map((l) => ({ ...l, id: crypto.randomUUID() })))}>지난달 매핑 복사</button> : null}
           <button className="primary" disabled={!dirty || !!busy} onClick={() => void save()}>{dirty ? "저장" : "저장됨"}</button>
@@ -214,6 +267,32 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         <div className="mix-actions"><button className="secondary" disabled={!!busy || !pasteText.trim()} onClick={() => void importMix(pasteText, "붙여넣기")}>가져오기</button></div>
       </article>}
       {(busy || notice) && <p className="viz-sub notice-line">{busy ? <><span className="spinner inline" /> {busy}</> : notice}</p>}
+
+      {plan && <article className="viz-card map-import">
+        <div className="viz-head">
+          <span className="viz-title">일예산 맞추기 · {month}</span>
+          <span className="viz-sub">라인의 남은 예산 ÷ 남은 일수를 소진 비중대로 배분했어요. 금액은 바꿀 수 있고, 체크된 것만 적용돼요.</span>
+        </div>
+        <div className="table-wrap"><table className="campaign-table">
+          <thead><tr><th /><th>라인</th><th>캠페인</th><th>현재 일예산</th><th>새 일예산</th><th>비고</th></tr></thead>
+          <tbody>{plan.map((r, i) => <tr key={r.campaign.id} className={r.warn && r.checked ? "over" : ""}>
+            <td><input type="checkbox" checked={r.checked} disabled={r.note.includes("미지원")} onChange={(e) => setPlan(plan.map((x, j) => j === i ? { ...x, checked: e.target.checked } : x))} /></td>
+            <td>{r.lineName}</td>
+            <td><span className={`channel ${r.campaign.channel}`}>{CHANNEL_LABEL[r.campaign.channel].replace("네이버 ", "")}</span> {r.campaign.name}</td>
+            <td className="num">{r.current ? won.format(r.current) : "–"}</td>
+            <td className="num"><input className="note-input num" style={{ width: "7.5em", textAlign: "right" }} value={r.next.toLocaleString()} inputMode="numeric"
+              onChange={(e) => { const v = Number(e.target.value.replace(/[^0-9]/g, "")) || 0; setPlan(plan.map((x, j) => j === i ? { ...x, next: v, warn: v >= BIG || (x.current > 0 && v >= x.current * 10) } : x)); }} /></td>
+            <td className="viz-sub">{r.warn && r.checked ? "⚠️ " : ""}{r.note}</td>
+          </tr>)}</tbody>
+          <tfoot><tr><td colSpan={4}><b>적용 대상 {plan.filter((r) => r.checked).length}개 · 하루 합계</b></td>
+            <td className="num"><b>{won.format(plan.filter((r) => r.checked).reduce((s, r) => s + r.next, 0))}</b></td>
+            <td className="viz-sub">월 환산 {compact(plan.filter((r) => r.checked).reduce((s, r) => s + r.next, 0) * dim)}</td></tr></tfoot>
+        </table></div>
+        <div className="mix-actions">
+          <button className="primary" disabled={applyBusy || !plan.some((r) => r.checked && r.next > 0)} onClick={() => void applyPlan()}>{applyBusy ? "적용 중…" : "선택한 일예산 적용"}</button>
+          <button className="secondary" disabled={applyBusy} onClick={() => setPlan(null)}>닫기</button>
+        </div>
+      </article>}
 
       {lines.length > 0 && <div className="map-board">
         <aside className={`map-unassigned${dragOver === UNASSIGNED ? " over" : ""}`} {...dropProps(UNASSIGNED)}>

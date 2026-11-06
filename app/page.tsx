@@ -901,7 +901,7 @@ export default function Dashboard() {
 
       {dashTab === "report" && <ReportView onOpenCampaign={goToCampaign} accountKeys={selectedAdvertiser?.accountKeys || []} campaigns={campaigns.filter((c) => !excludedIds.has(c.id))} excluded={advertiserCampaigns.filter((c) => excludedIds.has(c.id))} mixes={mixes} onOpenMix={() => setDashTab("mix")} apiFetch={apiFetch} />}
       {dashTab === "mix" && selectedAdvertiser && <MixView onOpenCampaign={goToCampaign} campaigns={budgetCampaigns} advertiserId={selectedAdvertiser.id} advertiserName={selectedAdvertiser.name} accountKeys={selectedAdvertiser.accountKeys} mixes={mixes} onSave={saveMix} onDelete={removeMix} onAskAi={(prompt) => { setChatOpen(true); void sendMessage(prompt); }} apiFetch={apiFetch} />}
-      {dashTab === "mapping" && selectedAdvertiser && <MixMappingView advertiserId={selectedAdvertiser.id} mixes={mixes} campaigns={budgetCampaigns} onSave={saveMix} onExclude={(c) => setExcludeTargets([c])} excludedCount={excludedIds.size} />}
+      {dashTab === "mapping" && selectedAdvertiser && <MixMappingView advertiserId={selectedAdvertiser.id} mixes={mixes} campaigns={budgetCampaigns} onSave={saveMix} onExclude={(c) => setExcludeTargets([c])} onApplyOps={applyOps} excludedCount={excludedIds.size} />}
       {dashTab === "mix" && <button className="link-button back-link" onClick={() => setDashTab("report")}>← 대시보드로</button>}
       {dashTab === "detail" && <nav className="segmented" aria-label="세부 성과분석">
         {hasSa && <button className={detailTab === "sa" ? "active" : ""} onClick={() => setDetailTab("sa")}>SA 분석</button>}
