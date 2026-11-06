@@ -11,6 +11,8 @@ export type MixLine = {
   name: string;
   /** 믹스구분(예: 27Y 학생방·온크쇼). 같은 달 믹스 안에서 리포트를 묶는 단위 */
   group?: string;
+  /** 원본 믹스 행의 칸(열 이름, 값) — 믹스 표를 원래 모양대로 보여줄 때 쓴다 */
+  source?: Array<[string, string]>;
   channel: Channel | "all";
   budget: number;
   targetRoas: number;
@@ -43,9 +45,16 @@ const words = (value: unknown) => (Array.isArray(value) ? value : String(value |
 
 /** 예전 라인은 이름이 '믹스구분 · 캠페인' 형태 → 앞부분을 믹스구분으로 본다 */
 export function groupFromName(name: string) { const i = name.indexOf(" · "); return i > 0 ? name.slice(0, i).trim().slice(0, 40) : ""; }
-export const lineGroup = (line: Pick<MixLine, "group" | "name">) => line.group || groupFromName(line.name) || "미분류";
+export const lineGroup = (line: Pick<MixLine, "group" | "name">) => line.group || groupFromName(line.name) || "믹스";
 /** 라인에 나온 순서대로 믹스구분 목록 */
 export const lineGroups = (lines: MixLine[] | undefined) => [...new Set((lines || []).map(lineGroup))];
+
+function sanitizeSource(value: unknown): Array<[string, string]> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.map((v: any) => Array.isArray(v) ? [String(v[0] ?? ""), String(v[1] ?? "")] : [String(v?.column ?? ""), String(v?.value ?? "")])
+    .filter(([k]) => k.trim()).slice(0, 14).map(([k, v]) => [k.trim().slice(0, 40), v.trim().slice(0, 120)] as [string, string]);
+  return out.length ? out : undefined;
+}
 
 export function sanitizeLines(input: unknown): MixLine[] {
   if (!Array.isArray(input)) return [];
@@ -57,6 +66,7 @@ export function sanitizeLines(input: unknown): MixLine[] {
     budget: Math.max(0, Math.round(Number(line?.budget) || 0)),
     targetRoas: Math.max(0, Math.round(Number(line?.targetRoas) || 0)),
     note: line?.note ? String(line.note).slice(0, 300) : undefined,
+    source: sanitizeSource(line?.source),
     keywords: words(line?.keywords),
     excludes: words(line?.excludes),
     campaignIds: (Array.isArray(line?.campaignIds) ? line.campaignIds : []).map(String).slice(0, 200),
@@ -163,7 +173,8 @@ export function parseMoney(value: string): number {
 export function parseMixTable(text: string): MixLine[] | null {
   const rows = splitTable(text).map((cells) => cells.map((c) => c.trim())).filter((cells) => cells.some(Boolean));
   if (rows.length < 2) return null;
-  const header = rows[0].map((h) => h.toLowerCase());
+  const rawHeader = rows[0];
+  const header = rawHeader.map((h) => h.toLowerCase());
   const find = (re: RegExp) => header.findIndex((h) => re.test(h));
   const findNot = (re: RegExp, not: RegExp) => header.findIndex((h) => re.test(h) && !not.test(h));
   const group = find(/믹스\s*구분|믹스명|그룹|group/);
@@ -172,7 +183,15 @@ export function parseMixTable(text: string): MixLine[] | null {
   const budgetCol = [find(/월\s*예산|월예산|budget/), findNot(/예산|금액/, /단위|집행|÷/)].find((i) => i >= 0) ?? -1;
   const col = { group, name: nameCol, channel: find(/매체|채널|channel|media/), budget: budgetCol, roas: find(/roas/), keywords, excludes: find(/제외|exclude/), note: find(/메모|비고|전략|note/) };
   if (col.budget < 0 || (col.name < 0 && col.channel < 0)) return null;
-  const lines = rows.slice(1).map((cells) => {
+  // 셀 병합된 엑셀은 아래 칸이 비어 있다 → 예산 열 왼쪽 칸은 위 행 값을 이어받는다
+  let prevCells: string[] = [];
+  const shown = new Set([col.budget, col.keywords, col.excludes, col.group].filter((i) => i >= 0));
+  const lines = rows.slice(1).map((raw) => {
+    // 합계·소계 행은 건너뛴다(병합 이어받기 전에 판단)
+    if (raw.some((c) => /^(합계|소계|총계|총합|total|subtotal|sum)$|subtotal|^total\b/i.test(c))) return null;
+    const cells = raw.map((c, i) => c || (i < col.budget && i !== col.note && i !== col.keywords && i !== col.excludes ? prevCells[i] || "" : ""));
+    prevCells = cells;
+    const source = rawHeader.map((h, i) => [h || `열${i + 1}`, cells[i] || ""] as [string, string]).filter((_, i) => !shown.has(i) && rawHeader[i] !== undefined).slice(0, 14);
     const name = (col.name >= 0 ? cells[col.name] : "") || (col.channel >= 0 ? cells[col.channel] : "");
     const channelCell = col.channel >= 0 ? cells[col.channel] || "" : "";
     const fromCell = parseChannel(channelCell);
@@ -182,7 +201,7 @@ export function parseMixTable(text: string): MixLine[] | null {
     return {
       id: crypto.randomUUID(), name, group: col.group >= 0 ? cells[col.group] || undefined : undefined, channel, budget: parseMoney(cells[col.budget] || ""),
       targetRoas: col.roas >= 0 ? Math.round(Number(String(cells[col.roas] || "").replace(/[^\d.]/g, "")) || 0) : 0,
-      note: col.note >= 0 ? cells[col.note] : undefined,
+      note: col.note >= 0 ? cells[col.note] : undefined, source,
       keywords: col.keywords >= 0 ? words(cells[col.keywords]) : [], excludes: col.excludes >= 0 ? words(cells[col.excludes]) : [], campaignIds: [],
     } as MixLine;
   }).filter((line): line is MixLine => !!line && !!line.name && line.budget > 0 && !/^(합계|총계|total|sum)$/i.test(line.name));
@@ -209,13 +228,14 @@ function splitTable(text: string): string[][] {
 // ---- 첨부 표 → 믹스 초안 (AI 없이) ----
 /** 엑셀 변환본(## 시트: 이름 단위)이나 CSV 에서 믹스 표를 찾는다 */
 export function parseMixAttachment(text: string): MixLine[] | null {
-  const sections = text.includes("## 시트:") ? text.split(/^## 시트:.*$/m).map((s) => s.trim()).filter(Boolean) : [text];
-  let best: MixLine[] | null = null;
-  for (const section of sections) {
-    const lines = parseMixTable(section);
-    if (lines && (!best || lines.length > best.length)) best = lines;
-  }
-  return best;
+  // 시트가 여러 개면 시트마다 읽고, 믹스구분 열이 없으면 시트 이름을 믹스구분으로 쓴다
+  const sections = text.includes("## 시트:")
+    ? text.split(/^## 시트:/m).map((s) => s.trim()).filter(Boolean).map((s) => { const nl = s.indexOf("\n"); return { name: s.slice(0, nl).trim(), body: s.slice(nl + 1) }; })
+    : [{ name: "", body: text }];
+  const found = sections.map((sec) => ({ sec, lines: parseMixTable(sec.body) })).filter((x) => x.lines?.length);
+  if (!found.length) return null;
+  const all = found.flatMap(({ sec, lines }) => lines!.map((l) => ({ ...l, group: l.group || (found.length > 1 ? sec.name : undefined) })));
+  return all.slice(0, 60);
 }
 
 /** 메시지·파일 이름에서 대상 월(YYYY-MM)을 찾는다. 없으면 이번 달 */

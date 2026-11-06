@@ -378,3 +378,13 @@ body { background:#fff; color:#323232; }
 .map-chip .channel { padding:2px 5px; font-size:10px; } .map-chip-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .map-chip em { font-style:normal; color:var(--muted); font-size:11px; white-space:nowrap; }
 @media (max-width:900px) { .map-board { grid-template-columns:1fr; } .map-unassigned { position:static; max-height:320px; } }
+.segmented.small { margin:0; } .segmented.small button { padding:6px 10px; font-size:12px; }
+.map-table th, .map-table td { font-size:12px; vertical-align:top; padding:6px 8px; }
+.map-table th { white-space:nowrap; } .map-table td { min-width:48px; }
+.map-table td.merged { border-top-color:transparent; }
+.map-table td.num { white-space:nowrap; text-align:right; }
+.map-table .map-col-campaigns { min-width:260px; }
+.map-table tr.over td { background:var(--green-soft); }
+.map-table tr.empty .map-col-campaigns { background:#fdf3f2; }
+.map-table .map-chip { padding:2px 4px; }
+.map-table .pace-track { min-width:70px; margin:4px 0 2px; }

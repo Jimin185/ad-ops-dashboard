@@ -46,6 +46,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
   const [search, setSearch] = useState("");
   const [channelFilter, setChannelFilter] = useState<Channel | "">("");
   const [dragOver, setDragOver] = useState("");
+  const [layout, setLayout] = useState<"table" | "board">("table");
   const fileRef = useRef<HTMLInputElement>(null);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -181,6 +182,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
           <span className="viz-sub">{lines.length ? `라인 ${lines.length}개 · 캠페인 ${linked}개 연결 · 빈 라인 ${emptyLines}개 · 미분류 ${unassigned.length}개(${won.format(unassignedSpend)})` : "아직 믹스가 없어요"}</span>
         </div>
         <div className="mix-actions">
+          {lines.length > 0 && <nav className="segmented small"><button className={layout === "table" ? "active" : ""} onClick={() => setLayout("table")}>믹스 표</button><button className={layout === "board" ? "active" : ""} onClick={() => setLayout("board")}>라인 띠</button></nav>}
           <button className="secondary" onClick={() => setImportOpen(!importOpen)}>믹스 넣기</button>
           {!lines.length && mixes.find((m) => m.month === shiftMonth(month, -1))?.lines?.length ? <button className="secondary" onClick={() => change(mixes.find((m) => m.month === shiftMonth(month, -1))!.lines!.map((l) => ({ ...l, id: crypto.randomUUID() })))}>지난달 매핑 복사</button> : null}
           <button className="primary" disabled={!dirty || !!busy} onClick={() => void save()}>{dirty ? "저장" : "저장됨"}</button>
@@ -208,7 +210,38 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
           <ul className="map-list">{filteredUnassigned.slice(0, 200).map((c) => chip(c, UNASSIGNED))}</ul>
           {!filteredUnassigned.length && <small className="viz-sub">여기로 끌어다 놓으면 라인에서 빠져요.</small>}
         </aside>
-        <div className="map-groups">
+        {layout === "table" ? <div className="map-groups">
+          {groups.map((g) => {
+            const groupResults = results.filter((r) => lineGroup(r.line) === g);
+            // 이 믹스구분의 원본 열(라인마다 다를 수 있어 합집합, 처음 나온 순서)
+            const cols: string[] = [];
+            for (const r of groupResults) for (const [k] of r.line.source || []) if (!cols.includes(k)) cols.push(k);
+            const showName = !cols.length;
+            const budget = groupResults.reduce((s, r) => s + r.line.budget, 0), spend = groupResults.reduce((s, r) => s + r.spend, 0);
+            const cell = (r: typeof groupResults[number], k: string) => r.line.source?.find(([key]) => key === k)?.[1] || "";
+            return <div key={g} className="map-group">
+              <div className="map-group-head"><b>{g}</b><span className="viz-sub">소진 {compact(spend)} / 예산 {compact(budget)}{budget ? ` · ${Math.round(spend / budget * 100)}%` : ""}</span></div>
+              <div className="table-wrap"><table className="campaign-table map-table">
+                <thead><tr>{showName && <th>라인</th>}{cols.map((k) => <th key={k}>{k}</th>)}<th className="map-col-campaigns">연결 캠페인 <small>(끌어다 놓기)</small></th><th>예산</th><th>소진</th></tr></thead>
+                <tbody>{groupResults.map((r, i) => {
+                  const prevR = groupResults[i - 1];
+                  // 엑셀의 셀 병합처럼: 위 행과 같은 값(앞 열도 모두 같을 때)은 비워 보인다
+                  let same = !!prevR;
+                  const list = [...r.campaigns].sort((a, b) => b.spend - a.spend);
+                  const ratio = r.line.budget ? r.spend / r.line.budget : 0;
+                  return <tr key={r.line.id} className={`${dragOver === r.line.id ? "over" : ""}${list.length ? "" : " empty"}`} {...dropProps(r.line.id)}>
+                    {showName && <td><b>{r.line.name}</b></td>}
+                    {cols.map((k) => { const v = cell(r, k); same = same && cell(prevR, k) === v; return <td key={k} className={same ? "merged" : ""}>{same ? "" : v}</td>; })}
+                    <td className="map-col-campaigns">{list.length ? <ul className="map-list">{list.map((c) => chip(c, r.line.id, r.line.campaignIds.includes(c.id)))}</ul> : <small className="map-empty">연결 없음 — 끌어다 놓으세요</small>}</td>
+                    <td className="num">{won.format(r.line.budget)}</td>
+                    <td className="num"><b>{compact(r.spend)}</b>{r.line.budget ? <><div className="pace-track"><div className={`pace-fill ${ratio > 1 ? "over" : ""}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} /></div><small className="viz-sub">{Math.round(ratio * 100)}%</small></> : null}</td>
+                  </tr>;
+                })}</tbody>
+                <tfoot><tr><td colSpan={(showName ? 1 : 0) + cols.length + 1}><b>{g} 합계</b></td><td className="num"><b>{won.format(budget)}</b></td><td className="num"><b>{compact(spend)}</b></td></tr></tfoot>
+              </table></div>
+            </div>;
+          })}
+        </div> : <div className="map-groups">
           {groups.map((g) => {
             const groupLines = results.filter((r) => lineGroup(r.line) === g);
             const budget = groupLines.reduce((s, r) => s + r.line.budget, 0), spend = groupLines.reduce((s, r) => s + r.spend, 0);
@@ -233,7 +266,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave }: {
               })}</div>
             </div>;
           })}
-        </div>
+        </div>}
       </div>}
       {lines.length > 0 && <small className="viz-sub">📌 = 직접 옮긴 캠페인(키워드보다 우선). 미분류로 뺀 캠페인은 그 라인 키워드에서 제외돼요. 다음 달은 '지난달 매핑 복사'로 그대로 이어 쓸 수 있어요.</small>}
     </section>
