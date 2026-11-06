@@ -9,6 +9,8 @@ export type MixChannelPlan = { budget: number; targetRoas: number; note?: string
 export type MixLine = {
   id: string;
   name: string;
+  /** 믹스구분(예: 27Y 학생방·온크쇼). 같은 달 믹스 안에서 리포트를 묶는 단위 */
+  group?: string;
   channel: Channel | "all";
   budget: number;
   targetRoas: number;
@@ -39,11 +41,18 @@ export const mixTotalBudget = (mix: Pick<MediaMix, "channels">) => Object.values
 const CHANNELS: Channel[] = ["naver_sa", "naver_gfa", "meta", "google_ads"];
 const words = (value: unknown) => (Array.isArray(value) ? value : String(value || "").split(/[,\n]/)).map((v) => String(v).trim()).filter(Boolean).slice(0, 20);
 
+/** 예전 라인은 이름이 '믹스구분 · 캠페인' 형태 → 앞부분을 믹스구분으로 본다 */
+export function groupFromName(name: string) { const i = name.indexOf(" · "); return i > 0 ? name.slice(0, i).trim().slice(0, 40) : ""; }
+export const lineGroup = (line: Pick<MixLine, "group" | "name">) => line.group || groupFromName(line.name) || "미분류";
+/** 라인에 나온 순서대로 믹스구분 목록 */
+export const lineGroups = (lines: MixLine[] | undefined) => [...new Set((lines || []).map(lineGroup))];
+
 export function sanitizeLines(input: unknown): MixLine[] {
   if (!Array.isArray(input)) return [];
   return input.slice(0, 60).map((line: any) => ({
     id: String(line?.id || crypto.randomUUID()),
     name: String(line?.name || "이름 없는 라인").slice(0, 80),
+    group: String(line?.group || "").trim().slice(0, 40) || groupFromName(String(line?.name || "")) || undefined,
     channel: (CHANNELS as string[]).includes(line?.channel) ? line.channel : "all",
     budget: Math.max(0, Math.round(Number(line?.budget) || 0)),
     targetRoas: Math.max(0, Math.round(Number(line?.targetRoas) || 0)),
@@ -152,21 +161,47 @@ export function parseMoney(value: string): number {
 
 /** 탭/쉼표로 구분된 표를 라인으로 바꾼다. 머리글을 못 찾으면 null (그때만 AI 사용). */
 export function parseMixTable(text: string): MixLine[] | null {
-  const rows = text.split(/\r?\n/).map((row) => row.includes("\t") ? row.split("\t") : row.split(",")).map((cells) => cells.map((c) => c.trim())).filter((cells) => cells.some(Boolean));
+  const rows = splitTable(text).map((cells) => cells.map((c) => c.trim())).filter((cells) => cells.some(Boolean));
   if (rows.length < 2) return null;
   const header = rows[0].map((h) => h.toLowerCase());
   const find = (re: RegExp) => header.findIndex((h) => re.test(h));
-  const col = { name: find(/구분|라인|캠페인|항목|name|line/), channel: find(/매체|채널|channel|media/), budget: find(/예산|budget|금액/), roas: find(/roas/), keywords: find(/키워드|keyword|매칭/), note: find(/메모|비고|전략|note/) };
+  const findNot = (re: RegExp, not: RegExp) => header.findIndex((h) => re.test(h) && !not.test(h));
+  const group = find(/믹스\s*구분|믹스명|그룹|group/);
+  const keywords = findNot(/키워드|keyword|매칭/, /제외|exclude/);
+  const nameCol = header.findIndex((h, i) => i !== group && /구분|라인|캠페인|항목|name|line/.test(h));
+  const budgetCol = [find(/월\s*예산|월예산|budget/), findNot(/예산|금액/, /단위|집행|÷/)].find((i) => i >= 0) ?? -1;
+  const col = { group, name: nameCol, channel: find(/매체|채널|channel|media/), budget: budgetCol, roas: find(/roas/), keywords, excludes: find(/제외|exclude/), note: find(/메모|비고|전략|note/) };
   if (col.budget < 0 || (col.name < 0 && col.channel < 0)) return null;
   const lines = rows.slice(1).map((cells) => {
     const name = (col.name >= 0 ? cells[col.name] : "") || (col.channel >= 0 ? cells[col.channel] : "");
-    const channel = parseChannel(`${col.channel >= 0 ? cells[col.channel] : ""} ${name}`);
+    const channelCell = col.channel >= 0 ? cells[col.channel] || "" : "";
+    const fromCell = parseChannel(channelCell);
+    const channel = fromCell !== "all" ? fromCell : parseChannel(`${channelCell} ${name}`);
+    // 대시보드에 없는 매체(버티컬·카카오·NOSP 등)는 라인에서 뺀다
+    if (channelCell && channel === "all" && !/전체|all/i.test(channelCell)) return null;
     return {
-      id: crypto.randomUUID(), name, channel, budget: parseMoney(cells[col.budget] || ""),
+      id: crypto.randomUUID(), name, group: col.group >= 0 ? cells[col.group] || undefined : undefined, channel, budget: parseMoney(cells[col.budget] || ""),
       targetRoas: col.roas >= 0 ? Math.round(Number(String(cells[col.roas] || "").replace(/[^\d.]/g, "")) || 0) : 0,
       note: col.note >= 0 ? cells[col.note] : undefined,
-      keywords: col.keywords >= 0 ? words(cells[col.keywords]) : [], excludes: [], campaignIds: [],
+      keywords: col.keywords >= 0 ? words(cells[col.keywords]) : [], excludes: col.excludes >= 0 ? words(cells[col.excludes]) : [], campaignIds: [],
     } as MixLine;
-  }).filter((line) => line.name && line.budget > 0 && !/^(합계|총계|total|sum)$/i.test(line.name));
+  }).filter((line): line is MixLine => !!line && !!line.name && line.budget > 0 && !/^(합계|총계|total|sum)$/i.test(line.name));
   return lines.length ? lines : null;
+}
+
+/** 탭 구분이면 탭으로, 아니면 따옴표를 지키는 CSV 로 나눈다 */
+function splitTable(text: string): string[][] {
+  const clean = text.replace(/^\uFEFF/, "");
+  if (clean.split(/\r?\n/, 2)[0].includes("\t")) return clean.split(/\r?\n/).map((row) => row.split("\t"));
+  const rows: string[][] = []; let row: string[] = [], cell = "", quoted = false;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    if (quoted) { if (ch === '"' && clean[i + 1] === '"') { cell += '"'; i++; } else if (ch === '"') quoted = false; else cell += ch; continue; }
+    if (ch === '"') quoted = true;
+    else if (ch === ",") { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && clean[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; }
+    else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
 }

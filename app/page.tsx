@@ -336,7 +336,7 @@ export default function Dashboard() {
     const { results, unassigned } = matchMix(mix.lines, advertiserCampaigns.filter((c) => (c.active ?? c.status === "on") || c.spend > 0));
     return {
       month: mix.month,
-      lines: results.map((r) => ({ line: r.line.name, channel: r.line.channel, budget: r.line.budget, targetRoas: r.line.targetRoas, spend: Math.round(r.spend), roas: Math.round(r.roas), campaigns: r.campaigns.map((c) => c.id) })),
+      lines: results.map((r) => ({ group: r.line.group, line: r.line.name, channel: r.line.channel, budget: r.line.budget, targetRoas: r.line.targetRoas, spend: Math.round(r.spend), roas: Math.round(r.roas), campaigns: r.campaigns.map((c) => c.id) })),
       unassigned: { count: unassigned.length, spend: Math.round(unassigned.reduce((s, c) => s + c.spend, 0)) },
     };
   }, [mixes, advertiserCampaigns, currentMonth]);

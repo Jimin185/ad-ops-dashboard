@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { Campaign, Channel } from "@/lib/types";
-import { lineMatches, matchMix, parseMixTable, type MixLine } from "@/lib/mix";
+import { lineGroup, lineMatches, matchMix, parseMixTable, type LineResult, type MixLine } from "@/lib/mix";
 import { CHANNEL_LABEL, CHANNEL_ORDER } from "./report-view";
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
@@ -42,6 +42,7 @@ export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentM
   const totalSpend = results.reduce((s, r) => s + r.spend, 0);
   const campaignNames = useMemo(() => pool.filter(isRunning).map((c) => ({ channel: c.channel, name: c.name })), [pool]);
 
+  const groups = useMemo(() => [...new Set(lines.map(lineGroup))], [lines]);
   const update = (id: string, patch: Partial<MixLine>) => onChange(lines.map((l) => l.id === id ? { ...l, ...patch } : l));
 
   async function callAi(payload: { text?: string; lines?: MixLine[] }) {
@@ -120,14 +121,18 @@ export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentM
       {notice && <p className="viz-sub notice-line">{notice}</p>}
 
       {lines.length ? <div className="table-wrap"><table className="campaign-table mix-table lines-table">
-        <thead><tr><th>라인</th><th>매체</th><th>월 예산</th><th>목표 ROAS</th><th>캠페인 키워드</th><th>연결</th><th>집행 · 페이싱</th><th>ROAS</th><th /></tr></thead>
-        <tbody>{results.map(({ line, campaigns: list, spend, roas }) => {
+        <thead><tr><th>믹스구분 · 라인</th><th>매체</th><th>월 예산</th><th>목표 ROAS</th><th>캠페인 키워드</th><th>연결</th><th>집행 · 페이싱</th><th>ROAS</th><th /></tr></thead>
+        <tbody>{groupResults(results).flatMap(({ group, items, budget: gBudget, spend: gSpend, roas: gRoas }) => [
+          groups.length > 1 && <tr key={`g-${group}`} className="group-row"><td colSpan={2}><b>{group}</b> <small className="viz-sub">{items.length}개 라인</small></td><td>{won.format(gBudget)}</td><td /><td /><td>{items.reduce((s, r) => s + r.campaigns.length, 0)}개</td>
+            <td><div className="pace-cell"><b>{compact(gSpend)}</b>{gBudget ? <small> / {compact(gBudget)}</small> : null}</div>{gBudget && isCurrentMonth ? <small className="viz-sub">소진 {Math.round(gSpend / gBudget * 100)}% · 경과 {Math.round(monthProgress * 100)}%</small> : null}</td>
+            <td><b>{gSpend ? `${Math.round(gRoas)}%` : "–"}</b></td><td /></tr>,
+          ...items.map(({ line, campaigns: list, spend, roas }) => {
           const expected = line.budget * monthProgress;
           const pacing = expected ? spend / expected : 0;
           const pace = !line.budget || !isCurrentMonth ? "" : pacing > 1.15 ? "over" : pacing < 0.85 ? "under" : "ok";
           return [
             <tr key={line.id}>
-              <td><input className="note-input" value={line.name} placeholder="라인 이름" onChange={(e) => update(line.id, { name: e.target.value })} /></td>
+              <td><input className="note-input group-input" value={line.group || ""} placeholder="믹스구분" title="믹스구분 (리포트를 이 단위로 묶어요)" onChange={(e) => update(line.id, { group: e.target.value || undefined })} /><input className="note-input" value={line.name} placeholder="라인 이름" onChange={(e) => update(line.id, { name: e.target.value })} /></td>
               <td><select className="mini-select" value={line.channel} onChange={(e) => update(line.id, { channel: e.target.value as Channel | "all" })}><option value="all">전체</option>{CHANNEL_ORDER.map((c) => <option key={c} value={c}>{CHANNEL_LABEL[c]}</option>)}</select></td>
               <td><input className="num-input" inputMode="numeric" value={line.budget ? line.budget.toLocaleString() : ""} placeholder="0" onChange={(e) => update(line.id, { budget: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
               <td><input className="num-input short" inputMode="numeric" value={line.targetRoas || ""} placeholder="0" onChange={(e) => update(line.id, { targetRoas: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} /></td>
@@ -150,7 +155,7 @@ export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentM
                 : <span className="viz-sub">연결된 캠페인이 없어요. 키워드를 바꾸거나 아래 미분류 캠페인에서 직접 지정하세요.</span>}
             </td></tr>,
           ];
-        })}</tbody>
+        })])}</tbody>
         <tfoot><tr><td colSpan={2}><b>합계</b></td><td>{won.format(totalBudget)}</td><td /><td /><td /><td><b>{compact(totalSpend)}</b>{totalBudget ? <small> / {compact(totalBudget)}</small> : null}</td><td /><td /></tr></tfoot>
       </table></div> : <div className="empty-state"><b>믹스 라인이 없습니다.</b><span>시트의 믹스를 붙여넣거나 지난달 라인을 복사해 시작하세요. 채널 단위로만 계획해도 괜찮아요.</span></div>}
 
@@ -158,9 +163,21 @@ export function MixLines({ lines, onChange, campaigns, monthProgress, isCurrentM
         <summary>미분류 캠페인 {unassigned.length}개 · 광고비 {won.format(unassignedSpend)}</summary>
         <ul className="line-campaigns">{unassigned.sort((a, b) => b.spend - a.spend).slice(0, 100).map((c) => <li key={c.id}>
           <span className={`channel ${c.channel}`}>{CHANNEL_LABEL[c.channel]}</span><span className={isRunning(c) ? "" : "muted"}>{c.name}</span><em>{won.format(c.spend)}</em>
-          <select className="mini-select" value="" onChange={(e) => e.target.value && assign(c, e.target.value)}><option value="">라인 지정…</option>{lines.map((l) => <option key={l.id} value={l.id}>{l.name || "(이름 없음)"}</option>)}</select>
+          <select className="mini-select" value="" onChange={(e) => e.target.value && assign(c, e.target.value)}><option value="">라인 지정…</option>{groups.map((g) => <optgroup key={g} label={g}>{lines.filter((l) => lineGroup(l) === g).map((l) => <option key={l.id} value={l.id}>{l.name || "(이름 없음)"}</option>)}</optgroup>)}</select>
         </li>)}</ul>
       </details>}
     </article>
   );
+}
+
+/** 라인 결과를 믹스구분별로 묶는다(라인에 나온 순서 유지) */
+export function groupResults(results: LineResult[]) {
+  const order: string[] = [];
+  const map = new Map<string, LineResult[]>();
+  for (const r of results) { const g = lineGroup(r.line); if (!map.has(g)) { map.set(g, []); order.push(g); } map.get(g)!.push(r); }
+  return order.map((group) => {
+    const items = map.get(group)!;
+    const budget = items.reduce((s, r) => s + r.line.budget, 0), spend = items.reduce((s, r) => s + r.spend, 0), revenue = items.reduce((s, r) => s + r.revenue, 0);
+    return { group, items, budget, spend, revenue, roas: spend ? revenue / spend * 100 : 0 };
+  });
 }

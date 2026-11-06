@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Campaign, Channel, DailyRow, ReportResult } from "@/lib/types";
-import type { MediaMix } from "@/lib/mix";
+import { lineGroup, matchMix, type MediaMix } from "@/lib/mix";
 
 // 채널 색은 채널(엔티티)에 고정한다. 순위나 필터에 따라 바뀌지 않는다.
 export const CHANNEL_ORDER: Channel[] = ["naver_sa", "naver_gfa", "meta", "google_ads"];
@@ -226,6 +226,27 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch,
   const monthDays = period === "this_month" ? new Date(Number(range.month.slice(0, 4)), Number(range.month.slice(5, 7)), 0).getDate() : elapsed;
   const projected = period === "this_month" && elapsed ? totals.spend / elapsed * monthDays : totals.spend;
 
+  // 믹스구분별 성과: 캠페인 목록의 이번 달 누적값을 라인 매칭으로 묶는다(이번 달 보기에서만 — 캠페인 값이 이번 달 누적이라서)
+  const groupRows = useMemo(() => {
+    if (period !== "this_month" || !mixForPeriod?.lines?.length) return null;
+    const pool = campaigns.filter((c) => accountKeys.includes(`${c.channel}:${c.accountId}`) && ((c.active ?? c.status === "on") || c.spend > 0));
+    const { results, unassigned } = matchMix(mixForPeriod.lines, pool);
+    const order: string[] = [];
+    const map = new Map<string, { group: string; budget: number; spend: number; revenue: number; conversions: number; byChannel: Partial<Record<Channel, { budget: number; spend: number }>> }>();
+    for (const r of results) {
+      const g = lineGroup(r.line);
+      if (!map.has(g)) { map.set(g, { group: g, budget: 0, spend: 0, revenue: 0, conversions: 0, byChannel: {} }); order.push(g); }
+      const row = map.get(g)!;
+      row.budget += r.line.budget; row.spend += r.spend; row.revenue += r.revenue; row.conversions += r.conversions;
+      // 라인 채널이 '전체'면 캠페인 채널별로 나눠 담는다
+      if (r.line.channel !== "all") { const c = row.byChannel[r.line.channel] ||= { budget: 0, spend: 0 }; c.budget += r.line.budget; c.spend += r.spend; }
+      else for (const camp of r.campaigns) { const c = row.byChannel[camp.channel] ||= { budget: 0, spend: 0 }; c.spend += camp.spend; }
+    }
+    const rest = unassigned.reduce((s, c) => s + c.spend, 0);
+    return { rows: order.map((g) => map.get(g)!), unassignedSpend: rest, unassignedCount: unassigned.filter((c) => c.spend > 0).length };
+  }, [period, mixForPeriod, campaigns, accountKeys]);
+  const progress = monthDays ? elapsed / monthDays : 0;
+
   const topCampaigns = campaigns.filter((c) => accountKeys.includes(`${c.channel}:${c.accountId}`) && c.spend > 0).sort((a, b) => b.spend - a.spend).slice(0, 10);
 
   if (!accountKeys.length) return <section className="report"><div className="empty-state"><b>매핑된 광고계정이 없습니다.</b><span>계정 매핑에서 이 광고주의 계정을 연결하면 리포트가 나타납니다.</span></div></section>;
@@ -276,6 +297,27 @@ export function ReportView({ accountKeys, campaigns, mixes, onOpenMix, apiFetch,
           {mixForPeriod && <small className="viz-sub">회색 막대 = 믹스 계획 예산</small>}
         </article>
       </div>
+
+      {groupRows && groupRows.rows.length > 0 && <article className="viz-card">
+        <div className="viz-head"><span className="viz-title">믹스구분별 성과 · 이번 달 누적</span><button className="link-button" onClick={onOpenMix}>라인·캠페인 연결 보기 →</button></div>
+        <div className="table-wrap"><table className="campaign-table group-table">
+          <thead><tr><th>믹스구분</th><th>예산 대비 집행</th>{channels.map((c) => <th key={c}>{CHANNEL_LABEL[c]}</th>)}<th>전환</th><th>ROAS</th></tr></thead>
+          <tbody>{groupRows.rows.map((g) => {
+            const ratio = g.budget ? g.spend / g.budget : 0;
+            const tone = !g.budget ? "" : ratio > progress * 1.15 ? "over" : ratio < progress * 0.85 ? "under" : "ok";
+            return <tr key={g.group}>
+              <td><b>{g.group}</b></td>
+              <td><div className="pace-cell"><b>{compactWon(g.spend)}</b>{g.budget ? <small> / {compactWon(g.budget)}</small> : null}</div>
+                {g.budget ? <div className="pace-track"><div className={`pace-fill ${tone}`} style={{ width: `${Math.min(100, ratio * 100)}%` }} /><i style={{ left: `${Math.min(100, progress * 100)}%` }} /></div> : null}
+                {g.budget ? <small className={`pace-label ${tone}`}>소진 {Math.round(ratio * 100)}% · 경과 {Math.round(progress * 100)}%</small> : null}</td>
+              {channels.map((c) => { const v = g.byChannel[c]; return <td key={c}>{v ? <><b>{compactWon(v.spend)}</b>{v.budget ? <small className="viz-sub"> / {compactWon(v.budget)}</small> : null}</> : <span className="viz-sub">–</span>}</td>; })}
+              <td>{Math.round(g.conversions).toLocaleString()}</td>
+              <td><b>{g.spend ? pct(roasOf(g.spend, g.revenue)) : "–"}</b></td>
+            </tr>;
+          })}</tbody>
+        </table></div>
+        <small className="viz-sub">캠페인 이름 키워드로 믹스 라인에 연결해 묶은 값이에요(GFA는 어제까지). {groupRows.unassignedCount ? `믹스에 연결 안 된 캠페인 ${groupRows.unassignedCount}개 · ${won.format(groupRows.unassignedSpend)}은 빠져 있어요.` : ""}</small>
+      </article>}
 
       <article className="viz-card">
         <div className="viz-head"><span className="viz-title">이번 달 광고비 상위 캠페인</span><button className="link-button" onClick={() => setShowTable(!showTable)}>{showTable ? "일자별 표 닫기" : "일자별 데이터 표로 보기"}</button></div>

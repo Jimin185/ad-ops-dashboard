@@ -112,7 +112,7 @@ export const assistantTools = [
         lines: {
           type: "array",
           description: "선택: 운영 단위 라인(예: 아이책상 기획전). 캠페인 이름에 들어간 키워드로 캠페인과 자동 연결됩니다.",
-          items: { type: "object", properties: { name: { type: "string" }, channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads", "all"] }, budget: { type: "integer", description: "월예산 원 단위 정수(표 금액 그대로)" }, targetRoas: { type: "integer" }, keywords: { type: "array", items: { type: "string" }, description: "캠페인 이름 일부(표의 캠페인 키워드 그대로, 쉼표로 여러 개면 나눠서)" }, excludes: { type: "array", items: { type: "string" } }, note: { type: "string", description: "짧은 메모(60자 이내)" } }, required: ["name", "channel", "budget"] },
+          items: { type: "object", properties: { name: { type: "string" }, group: { type: "string", description: "믹스구분(예: 27Y 학생방, 온크쇼). 리포트를 이 단위로 묶음" }, channel: { type: "string", enum: ["naver_sa", "naver_gfa", "meta", "google_ads", "all"] }, budget: { type: "integer", description: "월예산 원 단위 정수(표 금액 그대로)" }, targetRoas: { type: "integer" }, keywords: { type: "array", items: { type: "string" }, description: "캠페인 이름 일부(표의 캠페인 키워드 그대로, 쉼표로 여러 개면 나눠서)" }, excludes: { type: "array", items: { type: "string" } }, note: { type: "string", description: "짧은 메모(60자 이내)" } }, required: ["name", "channel", "budget"] },
         },
       },
       required: ["month", "targetRoas", "notes", "channels"],
