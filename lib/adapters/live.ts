@@ -237,6 +237,36 @@ async function googleSearch(customer: string, query: string) {
   const body = await googleRequest(`customers/${cleanId(customer)}/googleAds:search`, { query });
   return body.results || [];
 }
+
+const EU_NO = "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING";
+/**
+ * 구글은 EU 정치광고 선언이 비어 있는 캠페인이 하나라도 있으면 계정의 수정 API를 전부 막는다.
+ * 선언 필드만 바꾸는 mutate는 예외로 허용되므로, 계정 선언이 '없음'일 때 그 값을 미선언 캠페인에 전파한다.
+ * (계정 선언이 확인되지 않으면 임의로 채우지 않고 안내만 한다.)
+ */
+async function googleFillEuDeclarations(account: string) {
+  const [cust] = await googleSearch(account, "SELECT customer.contains_eu_political_advertising FROM customer");
+  if (cust?.customer?.containsEuPoliticalAdvertising !== EU_NO) {
+    throw new Error("구글애즈 계정의 EU 정치광고 선언이 확인되지 않아요. 구글애즈 관리자 → EU 정치 광고에서 '게재 안 함'으로 선언(제출)한 뒤 다시 시도해 주세요.");
+  }
+  const rows = await googleSearch(account, "SELECT campaign.id, campaign.contains_eu_political_advertising FROM campaign WHERE campaign.status != 'REMOVED'");
+  const missing = rows.filter((r: any) => (r.campaign?.containsEuPoliticalAdvertising || "UNSPECIFIED") === "UNSPECIFIED").map((r: any) => String(r.campaign.id));
+  for (let i = 0; i < missing.length; i += 500) {
+    await googleRequest(`customers/${account}/campaigns:mutate`, { operations: missing.slice(i, i + 500).map((cid: string) => (
+      { update: { resourceName: `customers/${account}/campaigns/${cid}`, containsEuPoliticalAdvertising: EU_NO }, updateMask: "containsEuPoliticalAdvertising" })) });
+  }
+  return missing.length;
+}
+/** EU 선언 미비로 거절된 mutate를, 계정 선언을 캠페인에 전파한 뒤 한 번 더 시도한다 */
+async function googleMutateWithEuRetry<T>(account: string, run: () => Promise<T>): Promise<T> {
+  try { return await run(); } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/EU political advertising/i.test(message)) throw error;
+    const filled = await googleFillEuDeclarations(account);
+    console.error(`구글 EU 정치광고 선언을 캠페인 ${filled}개에 전파하고 재시도합니다 (계정 ${account})`);
+    return run();
+  }
+}
 async function googleAccounts(): Promise<AdAccount[]> {
   const manager = cleanId(env("GOOGLE_ADS_LOGIN_CUSTOMER_ID") || "");
   if (!manager || !env("GOOGLE_ADS_DEVELOPER_TOKEN")) return [];
@@ -1185,7 +1215,7 @@ export const liveAdapter = {
       // 네이버·메타·GFA는 소재 내용이 불변이라 새 소재 등록 방식이 필요해 아직 막아 둔다.
       if (operation.channel !== "google_ads") throw new Error("랜딩 변경은 지금 구글애즈만 지원해요. 네이버·메타·GFA는 소재를 새로 만들어 교체하는 방식이라 준비 중입니다.");
       const key = unpack(operation.id);
-      await googleRequest(`customers/${key.account}/ads:mutate`, { operations: [{ update: { resourceName: `customers/${key.account}/ads/${key.id}`, finalUrls: [operation.url] }, updateMask: "finalUrls" }] });
+      await googleMutateWithEuRetry(key.account, () => googleRequest(`customers/${key.account}/ads:mutate`, { operations: [{ update: { resourceName: `customers/${key.account}/ads/${key.id}`, finalUrls: [operation.url] }, updateMask: "finalUrls" }] }));
       return { success: true, changed: 1 };
     }
     if (operation.channel === "naver_gfa") {
@@ -1221,13 +1251,13 @@ export const liveAdapter = {
         const budget = rows?.[0]?.campaignBudget;
         if (!budget?.resourceName) throw new Error("캠페인 예산을 찾지 못했어요.");
         if (budget.explicitlyShared) throw new Error(`공유 예산이라 바꿀 수 없어요 (캠페인 ${Number(budget.referenceCount) || "여러 "}개가 함께 사용). 구글애즈에서 전용 예산으로 바꾸거나 공유 예산을 직접 수정해 주세요.`);
-        await googleRequest(`customers/${key.account}/campaignBudgets:mutate`, { operations: [{ update: { resourceName: budget.resourceName, amountMicros: String(Math.round(operation.dailyBudget) * 1_000_000) }, updateMask: "amountMicros" }] });
+        await googleMutateWithEuRetry(key.account, () => googleRequest(`customers/${key.account}/campaignBudgets:mutate`, { operations: [{ update: { resourceName: budget.resourceName, amountMicros: String(Math.round(operation.dailyBudget) * 1_000_000) }, updateMask: "amountMicros" }] }));
         return { success: true, changed: 1 };
       }
       const resource = operation.entityType === "campaign" ? "campaigns" : operation.entityType === "adgroup" ? "adGroups" : "adGroupAds";
       const field = operation.entityType === "ad" ? "adGroupAd" : operation.entityType;
       const resourceName = operation.entityType === "ad" ? `customers/${key.account}/adGroupAds/${key.id}` : `customers/${key.account}/${resource}/${key.id}`;
-      await googleRequest(`customers/${key.account}/${resource}:mutate`, { operations: [{ update: { resourceName, status: operation.status === "on" ? "ENABLED" : "PAUSED" }, updateMask: "status" }] });
+      await googleMutateWithEuRetry(key.account, () => googleRequest(`customers/${key.account}/${resource}:mutate`, { operations: [{ update: { resourceName, status: operation.status === "on" ? "ENABLED" : "PAUSED" }, updateMask: "status" }] }));
       return { success: true, changed: 1, field };
     }
     throw new Error("지원하지 않는 변경입니다.");
