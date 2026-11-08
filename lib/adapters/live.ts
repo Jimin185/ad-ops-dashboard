@@ -696,7 +696,7 @@ async function metaCreatives(accountId: string, since: string, until: string): P
     const ids = top.slice(i, i + 25).map((row: any) => row.ad_id).join(",");
     if (!ids) continue;
     // 썸네일은 400px로 요청한다 (기본 64px는 너무 작음)
-    Object.assign(details, await metaGet("", { ids, fields: "effective_status,creative.thumbnail_width(400).thumbnail_height(400){thumbnail_url,image_url,title,body,object_story_spec}" }));
+    Object.assign(details, await metaGet("", { ids, fields: "effective_status,creative.thumbnail_width(400).thumbnail_height(400){thumbnail_url,image_url,title,body,object_story_spec,product_set_id}" }));
   }
   const mapped = top.map((row: any) => {
     const creative = details[row.ad_id]?.creative || {};
@@ -707,8 +707,11 @@ async function metaCreatives(accountId: string, since: string, until: string): P
       status: details[row.ad_id]?.effective_status, spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
       conversions: metaConv(row, kpiTypes), revenue: metaRev(row, kpiTypes) };
   });
-  // 인스턴트 경험 소재는 링크가 캔버스 문서라, 캔버스 안 버튼의 실제 랜딩으로 바꿔 준다
-  return resolveCanvasLandings(mapped);
+  // 인스턴트 경험 소재는 링크가 캔버스 문서라, 캔버스 안 버튼(없으면 CPAS 카탈로그 상품)의 실제 랜딩으로 바꿔 준다
+  return resolveCanvasLandings(mapped, (r) => {
+    const creative = details[r.id]?.creative;
+    return { productSetId: creative?.product_set_id, retailerIds: creative?.object_story_spec?.link_data?.retailer_item_ids };
+  });
 }
 
 // GFA 소재: 소재 목록 + 소재 단위 과거 성과
@@ -814,13 +817,46 @@ async function metaCanvasLanding(link?: string): Promise<string | undefined> {
   await cacheSet(key, url, Date.now() + (url ? 14 * 86400_000 : 3600_000));
   return url || undefined;
 }
-/** CreativeRow/Ad 목록의 캔버스 링크를 실제 랜딩으로 바꿔 준다 */
-async function resolveCanvasLandings<T extends { landingUrl?: string }>(rows: T[]): Promise<T[]> {
+/**
+ * 협력광고(CPAS) 카탈로그 소재의 실제 랜딩: 캔버스 안에 외부 URL이 없어서,
+ * 소재에 걸린 제품(retailer_item_ids)의 카탈로그 상품 URL을 찾아 쓴다 (제품세트 단위 14일 캐시).
+ */
+async function cpasProductLanding(productSetId?: string, retailerIds?: string[]): Promise<string | undefined> {
+  const rids = (retailerIds || []).map(String).filter((r) => r && r !== "0");
+  if (!productSetId || !rids.length) return undefined;
+  const key = `pset-urls:v1:${productSetId}`;
+  let map = (await cacheGet<Record<string, string>>(key))?.value;
+  if (!map) {
+    map = {};
+    try {
+      let params: Record<string, string> = { fields: "retailer_id,url", limit: "100" };
+      for (let page = 0; page < 3; page++) {
+        const body = await metaGet(`${productSetId}/products`, params);
+        for (const p of body?.data || []) if (p.retailer_id && p.url) map[String(p.retailer_id)] = String(p.url);
+        const after = body?.paging?.cursors?.after;
+        if (!after || (body?.data || []).length < 100) break;
+        params = { ...params, after };
+      }
+    } catch (error) {
+      console.error(`제품세트 ${productSetId} 상품 조회 실패 — ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await cacheSet(key, map, Date.now() + (Object.keys(map).length ? 14 * 86400_000 : 3600_000));
+  }
+  for (const rid of rids) if (map[rid]) return map[rid];
+  return undefined;
+}
+/** CreativeRow/Ad 목록의 캔버스 링크를 실제 랜딩으로 바꿔 준다 (캔버스 버튼 → 없으면 CPAS 카탈로그 상품 URL) */
+async function resolveCanvasLandings<T extends { landingUrl?: string }>(rows: T[], cpasOf?: (row: T) => { productSetId?: string; retailerIds?: string[] } | undefined): Promise<T[]> {
   const targets = [...new Set(rows.map((r) => r.landingUrl).filter((u) => u && /fb\.com\/canvas_doc\//.test(u)))] as string[];
   if (!targets.length) return rows;
   const resolved = new Map<string, string | undefined>();
   await Promise.all(targets.slice(0, 30).map(async (u) => resolved.set(u, await metaCanvasLanding(u))));
-  return rows.map((r) => r.landingUrl && resolved.get(r.landingUrl) ? { ...r, landingUrl: resolved.get(r.landingUrl) } : r);
+  return Promise.all(rows.map(async (r) => {
+    if (!r.landingUrl || !/fb\.com\/canvas_doc\//.test(r.landingUrl)) return r;
+    let url = resolved.get(r.landingUrl);
+    if (!url && cpasOf) { const c = cpasOf(r); url = await cpasProductLanding(c?.productSetId, c?.retailerIds); }
+    return url ? { ...r, landingUrl: url } : r;
+  }));
 }
 
 // ---- 네이버 파워링크 소재 관리 (조회·교체·추가, 확장소재 조회) ----
@@ -1427,12 +1463,16 @@ export const liveAdapter = {
         active: !row.userLock && row.status !== "PAUSED" }));
     }
     if (channel === "meta") {
-      const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status,effective_status,creative.thumbnail_width(120).thumbnail_height(120){thumbnail_url,image_url,object_story_spec}", limit: "500" });
-      return resolveCanvasLandings(body.data.map((row: any) => { const osp = row.creative?.object_story_spec || {}; const link = osp.link_data || osp.video_data || {};
-        return { id: packed(channel, key.account, row.id), adgroupId, channel, name: row.name, status: asStatus(row.status),
+      const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status,effective_status,creative.thumbnail_width(120).thumbnail_height(120){thumbnail_url,image_url,object_story_spec,product_set_id}", limit: "500" });
+      const cpasInfo = new Map<string, { productSetId?: string; retailerIds?: string[] }>();
+      const mapped = body.data.map((row: any) => { const osp = row.creative?.object_story_spec || {}; const link = osp.link_data || osp.video_data || {};
+        const id = packed(channel, key.account, row.id);
+        cpasInfo.set(id, { productSetId: row.creative?.product_set_id, retailerIds: link.retailer_item_ids });
+        return { id, adgroupId, channel, name: row.name, status: asStatus(row.status),
           description: link.message || link.description || undefined,
           imageUrl: row.creative?.thumbnail_url || row.creative?.image_url, landingUrl: link.link || link.call_to_action?.value?.link,
-          active: row.effective_status === "ACTIVE" }; }));
+          active: row.effective_status === "ACTIVE" }; });
+      return resolveCanvasLandings(mapped, (r: Ad) => cpasInfo.get(r.id));
     }
     if (channel === "google_ads") {
       const rows = await googleSearch(key.account, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad.final_urls, ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.status FROM ad_group_ad WHERE ad_group.id = ${key.id} AND ad_group_ad.status != 'REMOVED'`);
