@@ -1027,7 +1027,7 @@ export default function Dashboard() {
                       {adsByGroup[group.id]?.map((ad) => <div className={`ad-row ${ad.active === false ? "inactive-row" : ""}`} key={ad.id}>
                         <input type="checkbox" checked={selection.has(ad.id)} onChange={(e) => toggleMany([{ id: ad.id, channel: ad.channel, entityType: "ad", name: ad.name }], e.target.checked)} />
                         {ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span className="ad-thumb empty" />}
-                        <b>{ad.name}</b>
+                        <div className="ad-main"><b>{ad.name}</b>{ad.description && <div className="ad-desc" title={ad.description}>{ad.description}</div>}</div>
                         {ad.landingUrl && <a className="id ad-landing" href={ad.landingUrl} target="_blank" rel="noreferrer" title={ad.landingUrl} onClick={(e) => e.stopPropagation()}>🔗 {ad.landingUrl.replace(/^https?:\/\//, "").slice(0, 42)}</a>}
                         {ad.channel === "google_ads" && <button className="link-button small" title="랜딩(최종 URL) 변경 — 검색·디스플레이·영상 광고 공통" onClick={(e) => { e.stopPropagation();
                           const v = (window.prompt(`'${ad.name}' 랜딩 URL을 바꿉니다`, ad.landingUrl || "https://") || "").trim();

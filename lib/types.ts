@@ -55,6 +55,8 @@ export type Ad = {
   adgroupId: string;
   channel: Channel;
   name: string;
+  /** 소재 설명 문안 (파워링크 설명, 메타 본문, 구글 RSA 설명) */
+  description?: string;
   status: EntityStatus;
   imageUrl?: string;
   landingUrl?: string;

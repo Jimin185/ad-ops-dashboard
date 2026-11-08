@@ -1409,6 +1409,7 @@ export const liveAdapter = {
       const rows = await naverRequest("GET", `/ncc/ads?nccAdgroupId=${encodeURIComponent(key.id)}`, undefined, key.account);
       return rows.map((row: any) => ({ id: packed(channel, key.account, row.nccAdId), adgroupId, channel,
         name: row.referenceData?.productName || row.ad?.headline || row.subject || row.description || row.nccAdId, status: row.userLock ? "off" : "on",
+        description: row.ad?.description || undefined,
         imageUrl: row.referenceData?.imageUrl, landingUrl: row.ad?.pc?.final || row.ad?.mobile?.final || row.referenceData?.landingUrl,
         active: !row.userLock && row.status !== "PAUSED" }));
     }
@@ -1416,14 +1417,19 @@ export const liveAdapter = {
       const body = await metaGet(`${key.id}/ads`, { fields: "id,name,status,effective_status,creative.thumbnail_width(120).thumbnail_height(120){thumbnail_url,image_url,object_story_spec}", limit: "500" });
       return resolveCanvasLandings(body.data.map((row: any) => { const osp = row.creative?.object_story_spec || {}; const link = osp.link_data || osp.video_data || {};
         return { id: packed(channel, key.account, row.id), adgroupId, channel, name: row.name, status: asStatus(row.status),
+          description: link.message || link.description || undefined,
           imageUrl: row.creative?.thumbnail_url || row.creative?.image_url, landingUrl: link.link || link.call_to_action?.value?.link,
           active: row.effective_status === "ACTIVE" }; }));
     }
     if (channel === "google_ads") {
-      const rows = await googleSearch(key.account, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad.final_urls, ad_group_ad.status FROM ad_group_ad WHERE ad_group.id = ${key.id} AND ad_group_ad.status != 'REMOVED'`);
-      return rows.map((row: any) => ({ id: packed(channel, key.account, String(row.adGroupAd.ad.id)), adgroupId, channel,
-        name: row.adGroupAd.ad.name || `${row.adGroupAd.ad.type || ""} ${row.adGroupAd.ad.id}`.trim(), status: asStatus(row.adGroupAd.status),
-        landingUrl: row.adGroupAd.ad.finalUrls?.[0] }));
+      const rows = await googleSearch(key.account, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad.final_urls, ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.status FROM ad_group_ad WHERE ad_group.id = ${key.id} AND ad_group_ad.status != 'REMOVED'`);
+      return rows.map((row: any) => { const rsa = row.adGroupAd.ad.responsiveSearchAd;
+        const headline = rsa?.headlines?.map((h: any) => h.text).filter(Boolean).slice(0, 3).join(" | ");
+        const desc = rsa?.descriptions?.map((d: any) => d.text).filter(Boolean).slice(0, 2).join(" / ");
+        return { id: packed(channel, key.account, String(row.adGroupAd.ad.id)), adgroupId, channel,
+        name: row.adGroupAd.ad.name || headline || `${row.adGroupAd.ad.type || ""} ${row.adGroupAd.ad.id}`.trim(), status: asStatus(row.adGroupAd.status),
+        description: desc || undefined,
+        landingUrl: row.adGroupAd.ad.finalUrls?.[0] }; });
     }
     if (channel === "naver_gfa") {
       const rows = (await gfaPagedList(key.account, "creatives", { adSetNo: key.id })).filter((row) => String(row.adSetNo) === key.id);

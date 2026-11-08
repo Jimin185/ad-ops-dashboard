@@ -313,6 +313,8 @@ body { background:#fff; color:#323232; }
 .entity-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; gap:12px; align-items:center; padding:10px 14px; }
 .entity-name { border:0; background:none; text-align:left; padding:0; font:inherit; cursor:pointer; color:inherit; }
 .entity-group .ad-row { display:grid; grid-template-columns:auto auto minmax(0,1fr) auto; gap:12px; align-items:center; }
+.ad-main { min-width:0; }
+.ad-main .ad-desc { color:var(--muted); font-size:12px; margin-top:2px; overflow-wrap:anywhere; }
 .ad-thumb.empty { display:inline-block; width:32px; height:32px; border-radius:6px; background:#f1f1f1; }
 .status:disabled, .value-button:disabled { opacity:.5; cursor:not-allowed; }
 
