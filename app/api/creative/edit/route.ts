@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   const adId = params.get("adId"), canvasId = params.get("canvasId");
   if (!/^\d+$/.test(adId || canvasId || "")) return Response.json({ error: "adId 또는 canvasId(숫자)가 필요합니다." }, { status: 400 });
   try {
-    return Response.json(canvasId ? await metaCanvasProbe(canvasId) : await metaCreativeProbe(adId!));
+    return Response.json(canvasId ? await metaCanvasProbe(canvasId, params.get("fields") || undefined) : await metaCreativeProbe(adId!));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "조회 실패" }, { status: 500 });
   }

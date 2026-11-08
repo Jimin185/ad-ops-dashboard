@@ -795,12 +795,14 @@ async function googleCreatives(accountId: string, since: string, until: string):
 async function metaCanvasLanding(link?: string): Promise<string | undefined> {
   const m = String(link || "").match(/fb\.com\/canvas_doc\/(\d+)/);
   if (!m) return undefined;
-  const key = `canvas-url:v1:${m[1]}`;
+  const key = `canvas-url:v2:${m[1]}`;
   const cached = await cacheGet<string>(key);
   if (cached) return cached.value || undefined;
   let url = "";
   try {
-    const body = await metaGet(m[1], { fields: "body_elements" });
+    // body_elements만 요청하면 요소 이름·타입만 와서 URL이 없다. 버튼(open_url)은 중첩 필드로 따로 받아야 한다.
+    const body = await metaGet(m[1], { fields: "body_elements{name,element_type,open_url,child_elements{name,element_type,open_url}}" })
+      .catch(() => metaGet(m[1], { fields: "body_elements" }));
     const text = JSON.stringify(body).replace(/\\\//g, "/");
     url = (text.match(/https?:\/\/[^"\\\s]+/g) || []).find((u) => !/facebook\.com|fb\.com|fbcdn|instagram\.com/.test(u)) || "";
     if (!url) console.error(`캔버스 ${m[1]} 에서 외부 랜딩을 못 찾음 (body_elements ${text.length}자)`);
@@ -861,8 +863,8 @@ export async function metaCreativeProbe(adId: string) {
   return metaGet(adId, { fields: "name,effective_status,creative{id,name,object_type,object_story_spec,asset_feed_spec,template_url,template_url_spec,url_tags,product_set_id,effective_object_story_id,instagram_permalink_url}" });
 }
 /** 캔버스(인스턴트 경험) 문서 조회가 왜 실패하는지 원본 에러를 그대로 본다. */
-export async function metaCanvasProbe(canvasId: string) {
-  return metaGet(canvasId, { fields: "body_elements" });
+export async function metaCanvasProbe(canvasId: string, fields?: string) {
+  return metaGet(canvasId, { fields: fields && /^[\w{},.]+$/.test(fields) ? fields : "body_elements" });
 }
 
 export async function metaReplaceCreative(accountId: string, adId: string, change: { imageBase64?: string; link?: string }) {
