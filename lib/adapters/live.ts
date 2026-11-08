@@ -117,8 +117,10 @@ async function naverCampaigns(includeOff: boolean): Promise<Campaign[]> {
     const brandRows = rows.filter((row) => (productOf(row.campaignTp) || "").includes("브랜드") && !contracts[packed("naver_sa", account.id, row.nccCampaignId)]);
     if (brandRows.length) {
       try {
-        const all = (await naverRequest("GET", "/ncc/brand-new/contracts", undefined, account.id)) as any[] || [];
-        const live = all.filter((c) => !c.cancelTm && !/CANCELED|DEFEATED|FAILED/.test(String(c.biddingStatus || "")));
+        // 신형(신제품검색)은 /brand-new/contracts, 구형 브랜드검색 정액은 /time-contracts — 필드명은 동일하다.
+        const fetchContracts = (path: string) => naverRequest("GET", path, undefined, account.id).then((r) => (r as any[]) || []).catch(() => [] as any[]);
+        const all = (await Promise.all([fetchContracts("/ncc/brand-new/contracts"), fetchContracts("/ncc/time-contracts")])).flat();
+        const live = all.filter((c) => !c.cancelTm && !/CANCELED|DEFEATED|FAILED/.test(String(c.biddingStatus || c.contractStatus || "")));
         const byAdgroup = new Map<string, any[]>();
         for (const c of live) { const k = String(c.nccAdgroupId || ""); if (!byAdgroup.has(k)) byAdgroup.set(k, []); byAdgroup.get(k)!.push(c); }
         if (byAdgroup.size) {
