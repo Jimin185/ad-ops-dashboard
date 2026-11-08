@@ -1,4 +1,4 @@
-import { metaCreativeProbe, metaReplaceCreative } from "@/lib/adapters/live";
+import { metaCanvasProbe, metaCreativeProbe, metaReplaceCreative } from "@/lib/adapters/live";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -7,10 +7,11 @@ export const maxDuration = 60;
 // 진단: 랜딩이 안 잡히는 Meta 소재의 크리에이티브 원본 구조를 본다 (읽기 전용).
 export async function GET(request: Request) {
   if (process.env.ADAPTER_MODE !== "live") return Response.json({ error: "데모 모드" }, { status: 400 });
-  const adId = new URL(request.url).searchParams.get("adId");
-  if (!adId || !/^\d+$/.test(adId)) return Response.json({ error: "adId(숫자)가 필요합니다." }, { status: 400 });
+  const params = new URL(request.url).searchParams;
+  const adId = params.get("adId"), canvasId = params.get("canvasId");
+  if (!/^\d+$/.test(adId || canvasId || "")) return Response.json({ error: "adId 또는 canvasId(숫자)가 필요합니다." }, { status: 400 });
   try {
-    return Response.json(await metaCreativeProbe(adId));
+    return Response.json(canvasId ? await metaCanvasProbe(canvasId) : await metaCreativeProbe(adId!));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "조회 실패" }, { status: 500 });
   }

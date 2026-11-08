@@ -860,6 +860,10 @@ export async function naverReplaceAd(customerId: string, adgroupId: string, inpu
 export async function metaCreativeProbe(adId: string) {
   return metaGet(adId, { fields: "name,effective_status,creative{id,name,object_type,object_story_spec,asset_feed_spec,template_url,template_url_spec,url_tags,product_set_id,effective_object_story_id,instagram_permalink_url}" });
 }
+/** 캔버스(인스턴트 경험) 문서 조회가 왜 실패하는지 원본 에러를 그대로 본다. */
+export async function metaCanvasProbe(canvasId: string) {
+  return metaGet(canvasId, { fields: "body_elements" });
+}
 
 export async function metaReplaceCreative(accountId: string, adId: string, change: { imageBase64?: string; link?: string }) {
   const ad = await metaGet(adId, { fields: "name,creative{id,name,object_story_spec,url_tags}" });
