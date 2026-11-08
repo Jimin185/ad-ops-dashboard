@@ -856,6 +856,11 @@ export async function naverReplaceAd(customerId: string, adgroupId: string, inpu
  * Meta 소재 교체 (이미지·랜딩). 크리에이티브는 수정 불가 객체라, 기존 스펙을 복사해
  * 이미지 해시/링크만 바꾼 새 크리에이티브를 만들어 광고에 연결한다 (성과 지표는 광고 기준이라 유지됨).
  */
+/** 소재 구조 진단용: 랜딩이 안 잡히는 광고(협력광고 등)의 크리에이티브 원본 필드를 읽는다. */
+export async function metaCreativeProbe(adId: string) {
+  return metaGet(adId, { fields: "name,effective_status,creative{id,name,object_type,object_story_spec,asset_feed_spec,template_url,template_url_spec,url_tags,product_set_id,effective_object_story_id,instagram_permalink_url}" });
+}
+
 export async function metaReplaceCreative(accountId: string, adId: string, change: { imageBase64?: string; link?: string }) {
   const ad = await metaGet(adId, { fields: "name,creative{id,name,object_story_spec,url_tags}" });
   const spec = ad?.creative?.object_story_spec;
