@@ -1029,6 +1029,16 @@ export default function Dashboard() {
                         {ad.imageUrl ? <img className="ad-thumb" src={ad.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span className="ad-thumb empty" />}
                         <div className="ad-main"><b>{ad.name}</b>{ad.description && <div className="ad-desc" title={ad.description}>{ad.description}</div>}</div>
                         {ad.landingUrl && <a className="id ad-landing" href={ad.landingUrl} target="_blank" rel="noreferrer" title={ad.landingUrl} onClick={(e) => e.stopPropagation()}>🔗 {ad.landingUrl.replace(/^https?:\/\//, "").slice(0, 42)}</a>}
+                        {ad.channel === "meta" && <button className="link-button small" title="Meta 소재 랜딩 변경 — 기존 소재를 복사한 새 버전을 만들어 광고에 연결해요" onClick={async (e) => { e.stopPropagation();
+                          const v = (window.prompt(`'${ad.name}' 랜딩 URL을 바꿉니다\n(기존 소재를 복사한 새 버전이 만들어져 광고에 연결돼요)`, ad.landingUrl || "https://") || "").trim();
+                          if (!v || v === ad.landingUrl) return;
+                          if (!/^https?:\/\/\S+$/.test(v)) return window.alert("http:// 또는 https:// 로 시작하는 주소를 넣어 주세요.");
+                          const [, accountId, adId] = ad.id.split("|");
+                          const r = await apiFetch("/api/creative/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel: "meta", accountId, adId, link: v }) });
+                          const d = await r.json().catch(() => ({}));
+                          if (!r.ok) return window.alert(d.error || "랜딩을 바꾸지 못했어요.");
+                          setAdsByGroup((cur) => ({ ...cur, [group.id]: (cur[group.id] || []).map((x) => x.id === ad.id ? { ...x, landingUrl: v } : x) }));
+                          window.alert("랜딩을 바꿨어요. 매체 반영까지 잠시 걸릴 수 있어요."); }}>랜딩 변경</button>}
                         {ad.channel === "google_ads" && <button className="link-button small" title="랜딩(최종 URL) 변경 — 검색·디스플레이·영상 광고 공통" onClick={(e) => { e.stopPropagation();
                           const v = (window.prompt(`'${ad.name}' 랜딩 URL을 바꿉니다`, ad.landingUrl || "https://") || "").trim();
                           if (!v || v === ad.landingUrl) return;

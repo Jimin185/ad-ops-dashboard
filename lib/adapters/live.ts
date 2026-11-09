@@ -798,17 +798,21 @@ async function googleCreatives(accountId: string, since: string, until: string):
 async function metaCanvasLanding(link?: string): Promise<string | undefined> {
   const m = String(link || "").match(/fb\.com\/canvas_doc\/(\d+)/);
   if (!m) return undefined;
-  const key = `canvas-url:v2:${m[1]}`;
+  const key = `canvas-url:v3:${m[1]}`;
   const cached = await cacheGet<string>(key);
   if (cached) return cached.value || undefined;
   let url = "";
   try {
-    // body_elements만 요청하면 요소 이름·타입만 와서 URL이 없다. 버튼(open_url)은 중첩 필드로 따로 받아야 한다.
-    const body = await metaGet(m[1], { fields: "body_elements{name,element_type,open_url,child_elements{name,element_type,open_url}}" })
-      .catch(() => metaGet(m[1], { fields: "body_elements" }));
-    const text = JSON.stringify(body).replace(/\\\//g, "/");
-    url = (text.match(/https?:\/\/[^"\\\s]+/g) || []).find((u) => !/facebook\.com|fb\.com|fbcdn|instagram\.com/.test(u)) || "";
-    if (!url) console.error(`캔버스 ${m[1]} 에서 외부 랜딩을 못 찾음 (body_elements ${text.length}자)`);
+    // 캔버스 버튼의 링크는 action{type:OPEN_URL,url} 필드에 있다(open_url 이라는 필드는 없음).
+    // 고정 버튼(FOOTER) 링크를 먼저 쓰고, 없으면 본문 버튼 링크 중 첫 번째 외부 URL.
+    const body = await metaGet(m[1], { fields: "body_elements{name,element_type,action,child_elements{name,element_type,action,child_elements{name,element_type,action}}}" })
+      .catch(() => metaGet(m[1], { fields: "body_elements{name,element_type,action,child_elements{name,element_type,action}}" }));
+    const external = (u: unknown) => typeof u === "string" && /^https?:\/\//.test(u) && !/facebook\.com|fb\.com|fbcdn|instagram\.com/.test(u) ? u : "";
+    const found: Array<{ url: string; footer: boolean }> = [];
+    const walk = (els: any[] | undefined, footer: boolean) => { for (const el of els || []) { const u = external(el?.action?.url); if (u) found.push({ url: u, footer }); walk(el?.child_elements, footer || el?.element_type === "FOOTER"); } };
+    walk(body?.body_elements, false);
+    url = (found.find((f) => f.footer) || found[0])?.url || "";
+    if (!url) console.error(`캔버스 ${m[1]} 에서 외부 랜딩을 못 찾음 (버튼 ${found.length}개)`);
   } catch (error) {
     console.error(`캔버스 ${m[1]} 조회 실패 — ${error instanceof Error ? error.message : String(error)}`);
     url = "";
@@ -945,7 +949,7 @@ export async function getCreativeReport(accountKeys: string[], since: string, un
   const rows = (await Promise.all(targets.map(async (t) => {
     // 지난 주 이전 기간은 영구 적재, 그 외는 하루 한 번 갱신. 전환 기준(KPI)이 바뀌면 키가 달라져 다시 집계한다.
     const kpi = (await kpiPrefs())[`${t.channel}:${t.accountId}`] || "";
-    const key = `creative:v3:${t.channel}:${t.accountId}:${since}:${until}${kpi ? `:k=${kpi}` : ""}`;
+    const key = `creative:v4:${t.channel}:${t.accountId}:${since}:${until}${kpi ? `:k=${kpi}` : ""}`;
     const cached = force ? null : await cacheGet<CreativeRow[]>(key);
     if (cached) { oldest = Math.min(oldest, cached.updatedAt); return cached.value; }
     try {
