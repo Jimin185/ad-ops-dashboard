@@ -1608,3 +1608,68 @@ export const liveAdapter = {
   },
 };
 
+
+// ---- 보고서용 원본 내보내기 (읽기 전용) ----
+/**
+ * 네이버 SA: 날짜 × 캠페인 × 광고그룹 × 키워드 × PC/모바일 단위 원본(노출·클릭·비용·노출순위 합).
+ * 날짜별 AD 리포트를 받아 캐시한다. 60초 안에 다 못 받으면 status:"loading" 을 돌려주고, 다시 부르면 이어서 받는다.
+ */
+export async function exportNaverSaRaw(customerId: string, since: string, until: string) {
+  const dates = eachDate(since, until);
+  const started = Date.now();
+  const days: Array<{ date: string; rows: string[][] }> = [];
+  let pending = 0;
+  for (let i = 0; i < dates.length; i += 4) {
+    if (Date.now() - started > 35_000) { pending += dates.length - i; break; }
+    const batch = await Promise.all(dates.slice(i, i + 4).map(async (date) => {
+      const key = `sa-raw:v1:${customerId}:${date}`;
+      const cached = await cacheGet<string[][]>(key);
+      if (cached) return { date, rows: cached.value };
+      const rows = await naverStatReport(customerId, "AD", date, 10_000).catch(() => "pending" as const);
+      if (rows === "pending") return "pending" as const;
+      await cacheSet(key, rows, isFinalDate(date) ? null : nextDailyRefresh() + 7 * 86400_000);
+      return { date, rows };
+    }));
+    for (const d of batch) if (d === "pending") pending++; else days.push(d);
+  }
+  if (pending) return { status: "loading" as const, ready: dates.length - pending, total: dates.length };
+  // AD 리포트 열: 0 날짜, 1 고객, 2 캠페인, 3 광고그룹, 4 키워드, 5 소재, 6 비즈채널, 7 매체, 8 PC/모바일(P/M), 9 노출, 10 클릭, 11 비용, 12 노출순위합
+  const agg = new Map<string, { date: string; campaignId: string; adgroupId: string; keywordId: string; device: string; imp: number; clk: number; cost: number; rankSum: number }>();
+  for (const d of days) for (const r of d.rows) {
+    const k = [d.date, r[2], r[3], r[4] || "-", r[8]].join("|");
+    const a = agg.get(k) || { date: d.date, campaignId: r[2], adgroupId: r[3], keywordId: r[4] || "-", device: r[8] === "P" ? "PC" : "모바일", imp: 0, clk: 0, cost: 0, rankSum: 0 };
+    a.imp += num(r[9]); a.clk += num(r[10]); a.cost += num(r[11]); a.rankSum += num(r[12]);
+    agg.set(k, a);
+  }
+  const rows = [...agg.values()];
+  const campaigns = (await naverRequest("GET", "/ncc/campaigns", undefined, customerId)) as any[];
+  const campaignName = Object.fromEntries(campaigns.map((c) => [c.nccCampaignId, c.name]));
+  const [groups, keywords] = await Promise.all([
+    saNames(customerId, "adgroups", [...new Set(rows.map((r) => r.adgroupId))]),
+    saNames(customerId, "keywords", [...new Set(rows.map((r) => r.keywordId).filter((k) => k !== "-"))]),
+  ]);
+  return { status: "ready" as const, since, until, note: "cost 는 네이버 리포트 비용(VAT 별도, 원)", rows: rows.map((r) => ({ ...r, campaign: campaignName[r.campaignId] || r.campaignId, adgroup: groups[r.adgroupId]?.name || r.adgroupId, keyword: r.keywordId === "-" ? "-" : keywords[r.keywordId]?.name || r.keywordId })) };
+}
+
+/** GFA: 날짜 × 소재 단위 원본(비용·노출·클릭)과 소재·광고세트·캠페인 이름 */
+export async function exportGfaRaw(accountId: string, since: string, until: string) {
+  const base = `/adAccounts/${accountId}`;
+  const range = { startDate: since, endDate: until, timeUnit: "daily" };
+  const perf = await gfaPaged(`${base}/performance/past/creatives`, range);
+  const sets = [...new Set(perf.map((r: any) => String(r.adSetNo ?? "")).filter(Boolean))];
+  const creativeNames: Record<string, string> = {}, setNames: Record<string, string> = {}, campaignNames: Record<string, string> = {};
+  for (const c of await gfaPagedList(accountId, "adSets").catch(() => [] as any[])) setNames[String(c.no ?? c.adSetNo)] = c.name;
+  for (let page = 0; page < 20; page++) {
+    const items = gfaList(await gfaGet(`${base}/campaigns`, { page: String(page), size: "100" }).catch(() => []));
+    for (const c of items) campaignNames[String(c.no ?? c.campaignNo)] = c.name;
+    if (items.length < 100) break;
+  }
+  await Promise.all(sets.map(async (adSetNo) => {
+    for (const c of await gfaPagedList(accountId, "creatives", { adSetNo }).catch(() => [] as any[])) creativeNames[String(c.no ?? c.creativeNo)] = c.name;
+  }));
+  return { status: "ready" as const, since, until, note: "sales 는 GFA 비용(원)", sampleKeys: perf[0] ? Object.keys(perf[0]) : [], rows: perf.map((r: any) => ({
+    date: r.date ?? r.statDate ?? r.startDate ?? r.dt, creativeNo: String(r.creativeNo ?? ""), creative: creativeNames[String(r.creativeNo)] || String(r.creativeNo ?? ""),
+    adSetNo: String(r.adSetNo ?? ""), adSet: setNames[String(r.adSetNo)] || String(r.adSetNo ?? ""), campaignNo: String(r.campaignNo ?? ""), campaign: campaignNames[String(r.campaignNo)] || String(r.campaignNo ?? ""),
+    sales: num(r.sales), imp: num(r.impCount), clk: num(r.clickCount), raw: r,
+  })) };
+}
