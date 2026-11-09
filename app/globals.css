@@ -408,3 +408,10 @@ body { background:#fff; color:#323232; }
 .period-note { display:block; font-size:10px; margin-top:2px; white-space:normal; }
 .budget-link { font-weight:700; color:var(--ink); text-decoration:underline dotted; }
 .map-table .pace-track i { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--ink); }
+/* 믹스구분·라인 편집 */
+.map-group.over { outline:2px dashed var(--green); background:var(--green-soft); }
+.map-group-head { gap:10px; } .map-group-head > b { margin-right:auto; }
+.map-group-actions { display:inline-flex; gap:8px; font-size:12px; opacity:.75; } .map-group-actions .link-button { font-size:12px; }
+.map-group-empty { border:1px dashed var(--line); border-radius:10px; padding:14px; color:var(--muted); font-size:12px; text-align:center; }
+.line-handle { cursor:grab; color:#9aa19a; font-size:14px; padding:0 4px; user-select:none; } .line-handle:active { cursor:grabbing; }
+.handle-col { width:34px; white-space:nowrap; } .line-del { font-size:13px; padding:0 2px; opacity:.5; } .line-del:hover { opacity:1; }

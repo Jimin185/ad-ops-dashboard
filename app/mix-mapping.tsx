@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Campaign, Channel, ChangeOperation } from "@/lib/types";
-import { channelsFromLines, expectedSpend, lineGroup, lineMatches, matchMix, mergePeriodLines, parseMixAttachment, periodAdvice, type MediaMix, type MixLine, type MixPeriod } from "@/lib/mix";
+import { channelsFromLines, expectedSpend, lineGroup, lineMatches, matchMix, mergePeriodLines, parseChannel, parseMixAttachment, parseMoney, periodAdvice, type MediaMix, type MixLine, type MixPeriod } from "@/lib/mix";
 import { CHANNEL_LABEL, periodRange } from "./report-view";
 
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
@@ -62,7 +62,65 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
   const pool = useMemo(() => campaigns.filter((c) => isRunning(c) || (month === thisMonth && c.spend > 0)), [campaigns, month, thisMonth]);
   const { results, unassigned } = useMemo(() => matchMix(lines, pool), [lines, pool]);
   const byLine = useMemo(() => new Map(results.map((r) => [r.line.id, r])), [results]);
-  const groups = useMemo(() => [...new Set(lines.map(lineGroup))], [lines]);
+  // 라인이 아직 없는 믹스구분(방금 추가한 것)도 보이게 따로 들고 있는다
+  const [extraGroups, setExtraGroups] = useState<string[]>([]);
+  const groups = useMemo(() => { const g = [...new Set(lines.map(lineGroup))]; return [...g, ...extraGroups.filter((x) => !g.includes(x))]; }, [lines, extraGroups]);
+
+  // ---- 믹스구분·라인 편집 (추가·이름 변경·삭제, 라인을 다른 믹스구분으로 끌어 옮기기) ----
+  function addGroup() {
+    const name = (window.prompt("새 믹스구분 이름 (예: 공식몰 프로모션)") || "").trim();
+    if (!name) return;
+    if (groups.includes(name)) return window.alert("같은 이름의 믹스구분이 이미 있어요.");
+    setExtraGroups((cur) => [...cur, name]);
+  }
+  function renameGroup(g: string) {
+    const name = (window.prompt(`'${g}' 이름 바꾸기`, g) || "").trim();
+    if (!name || name === g) return;
+    if (groups.includes(name) && !window.confirm(`'${name}' 믹스구분이 이미 있어요. 두 믹스구분을 합칠까요?`)) return;
+    setExtraGroups((cur) => cur.map((x) => x === g ? name : x));
+    change(lines.map((l) => lineGroup(l) === g ? { ...l, group: name } : l));
+  }
+  function deleteGroup(g: string) {
+    const n = lines.filter((l) => lineGroup(l) === g).length;
+    if (n && !window.confirm(`'${g}'와 그 안의 라인 ${n}개를 지울까요?\n라인을 남기려면 먼저 다른 믹스구분으로 끌어 옮겨 주세요.`)) return;
+    setExtraGroups((cur) => cur.filter((x) => x !== g));
+    if (n) change(lines.filter((l) => lineGroup(l) !== g));
+  }
+  function addLine(g: string) {
+    const text = (window.prompt(`'${g}'에 라인 추가\n형식: 이름, 매체, 월예산\n예: 공식몰 홍보, 메타, 500000`) || "").trim();
+    if (!text) return;
+    const [name, ch = "", money = "0"] = text.split(",").map((x) => x.trim());
+    if (!name) return;
+    const channel = parseChannel(ch);
+    change([...lines, { id: crypto.randomUUID(), name, group: g, channel, budget: parseMoney(money), targetRoas: 0, keywords: [name], excludes: [], campaignIds: [] }]);
+    setExtraGroups((cur) => cur.filter((x) => x !== g));
+  }
+  function deleteLine(line: MixLine) {
+    if (!window.confirm(`라인 '${line.name}'을(를) 지울까요? 연결된 캠페인은 미분류로 돌아가요.`)) return;
+    change(lines.filter((l) => l.id !== line.id));
+  }
+  /** 라인을 다른 믹스구분(끝)이나 다른 라인 앞으로 옮긴다 */
+  function moveLine(lineId: string, toGroup: string, beforeId?: string) {
+    const line = lines.find((l) => l.id === lineId);
+    if (!line || lineId === beforeId) return;
+    const moved = { ...line, group: toGroup };
+    const rest = lines.filter((l) => l.id !== lineId);
+    let at = beforeId ? rest.findIndex((l) => l.id === beforeId) : -1;
+    if (at < 0) { const lastOfGroup = rest.map(lineGroup).lastIndexOf(toGroup); at = lastOfGroup >= 0 ? lastOfGroup + 1 : rest.length; }
+    change([...rest.slice(0, at), moved, ...rest.slice(at)]);
+    setExtraGroups((cur) => cur.filter((x) => x !== toGroup));
+  }
+  const lineDrag = (line: MixLine) => ({ draggable: true, title: "끌어서 다른 믹스구분이나 위치로 옮기세요", onDragStart: (e: React.DragEvent) => { e.stopPropagation(); e.dataTransfer.setData("text/line-id", line.id); e.dataTransfer.effectAllowed = "move"; } });
+  const groupDrop = (g: string) => ({
+    onDragOver: (e: React.DragEvent) => { if (e.dataTransfer.types.includes("text/line-id")) { e.preventDefault(); if (dragOver !== `g:${g}`) setDragOver(`g:${g}`); } },
+    onDragLeave: () => setDragOver((cur) => cur === `g:${g}` ? "" : cur),
+    onDrop: (e: React.DragEvent) => { const id = e.dataTransfer.getData("text/line-id"); if (id) { e.preventDefault(); setDragOver(""); moveLine(id, g); } },
+  });
+  // 컴포넌트로 만들면 렌더마다 다시 마운트돼 끌기 중에 놓을 자리가 사라진다 → 함수로 JSX만 만든다
+  const groupHead = (g: string, children: React.ReactNode) => <div className="map-group-head">
+    <b>{g}</b>{children}
+    <span className="map-group-actions"><button className="link-button" onClick={() => addLine(g)}>+ 라인</button><button className="link-button" onClick={() => renameGroup(g)}>이름</button><button className="link-button danger" onClick={() => deleteGroup(g)}>삭제</button></span>
+  </div>;
   const linked = results.reduce((s, r) => s + r.campaigns.length, 0);
   const emptyLines = results.filter((r) => !r.campaigns.length).length;
   const unassignedSpend = unassigned.reduce((s, c) => s + c.spend, 0);
@@ -151,6 +209,8 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
   const campaignById = useMemo(() => new Map(pool.map((c) => [c.id, c])), [pool]);
   function onDrop(e: React.DragEvent, toLineId: string) {
     e.preventDefault(); setDragOver("");
+    const lineId = e.dataTransfer.getData("text/line-id");
+    if (lineId) { e.stopPropagation(); const target = lines.find((l) => l.id === toLineId); if (target) moveLine(lineId, lineGroup(target), toLineId); return; }
     const campaign = campaignById.get(e.dataTransfer.getData("text/campaign-id"));
     if (campaign) move(campaign, toLineId);
   }
@@ -332,6 +392,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
         <div className="mix-actions">
           {lines.length > 0 && <nav className="segmented small"><button className={layout === "table" ? "active" : ""} onClick={() => setLayout("table")}>믹스 표</button><button className={layout === "board" ? "active" : ""} onClick={() => setLayout("board")}>라인 띠</button></nav>}
           {lines.length > 0 && month === thisMonth && onApplyOps && <button className="secondary" disabled={!!busy || applyBusy} onClick={() => void buildPlan()}>일예산 맞추기</button>}
+          {lines.length > 0 && <button className="secondary" onClick={addGroup}>+ 믹스구분</button>}
           <button className="secondary" onClick={() => setImportOpen(!importOpen)}>믹스 넣기</button>
           {!lines.length && mixes.find((m) => m.month === shiftMonth(month, -1))?.lines?.length ? <button className="secondary" onClick={() => change(mixes.find((m) => m.month === shiftMonth(month, -1))!.lines!.map((l) => ({ ...l, id: crypto.randomUUID() })))}>지난달 매핑 복사</button> : null}
           <button className="primary" disabled={!dirty || !!busy} onClick={() => void save()}>{dirty ? "저장" : "저장됨"}</button>
@@ -403,10 +464,10 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
             const showName = !cols.length;
             const budget = groupResults.reduce((s, r) => s + r.line.budget, 0), spend = groupResults.reduce((s, r) => s + r.spend, 0);
             const cell = (r: typeof groupResults[number], k: string) => r.line.source?.find(([key]) => key === k)?.[1] || "";
-            return <div key={g} className="map-group">
-              <div className="map-group-head"><b>{g}</b><span className="viz-sub">소진 {compact(spend)} / 예산 {compact(budget)}{budget ? ` · ${Math.round(spend / budget * 100)}%` : ""}</span></div>
-              <div className="table-wrap"><table className="campaign-table map-table">
-                <thead><tr>{showName && <th>라인</th>}{cols.map((k) => <th key={k}>{k}</th>)}<th className="map-col-campaigns">연결 캠페인 <small>(끌어다 놓기)</small></th><th>예산</th><th>소진</th></tr></thead>
+            return <div key={g} className={`map-group${dragOver === `g:${g}` ? " over" : ""}`} {...groupDrop(g)}>
+              {groupHead(g, <span className="viz-sub">소진 {compact(spend)} / 예산 {compact(budget)}{budget ? ` · ${Math.round(spend / budget * 100)}%` : ""}</span>)}
+              {!groupResults.length ? <div className="map-group-empty">비어 있어요 — 다른 믹스구분의 라인을 ⠿ 손잡이로 끌어 놓거나 '+ 라인'으로 추가하세요</div> : <div className="table-wrap"><table className="campaign-table map-table">
+                <thead><tr><th className="handle-col" />{showName && <th>라인</th>}{cols.map((k) => <th key={k}>{k}</th>)}<th className="map-col-campaigns">연결 캠페인 <small>(끌어다 놓기)</small></th><th>예산</th><th>소진</th></tr></thead>
                 <tbody>{groupResults.map((r, i) => {
                   const prevR = groupResults[i - 1];
                   // 엑셀의 셀 병합처럼: 위 행과 같은 값(앞 열도 모두 같을 때)은 비워 보인다
@@ -414,6 +475,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
                   const list = [...r.campaigns].sort((a, b) => b.spend - a.spend);
                   const ratio = r.line.budget ? r.spend / r.line.budget : 0;
                   return <tr key={r.line.id} className={`${dragOver === r.line.id ? "over" : ""}${list.length ? "" : " empty"}`} {...dropProps(r.line.id)}>
+                    <td className="handle-col"><span className="line-handle" {...lineDrag(r.line)}>⠿</span><button className="link-button danger line-del" title="라인 삭제" onClick={() => deleteLine(r.line)}>×</button></td>
                     {showName && <td><b>{r.line.name}</b></td>}
                     {cols.map((k) => { const v = cell(r, k); same = same && cell(prevR, k) === v; return <td key={k} className={same ? "merged" : ""}>{same ? "" : v}</td>; })}
                     <td className="map-col-campaigns">{list.length ? <ul className="map-list">{list.map((c) => chip(c, r.line.id, r.line.campaignIds.includes(c.id)))}</ul> : <small className="map-empty">연결 없음 — 끌어다 놓으세요</small>}</td>
@@ -429,16 +491,17 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
                     })()}</td>
                   </tr>;
                 })}</tbody>
-                <tfoot><tr><td colSpan={(showName ? 1 : 0) + cols.length + 1}><b>{g} 합계</b></td><td className="num"><b>{won.format(budget)}</b></td><td className="num"><b>{compact(spend)}</b></td></tr></tfoot>
-              </table></div>
+                <tfoot><tr><td colSpan={(showName ? 1 : 0) + cols.length + 2}><b>{g} 합계</b></td><td className="num"><b>{won.format(budget)}</b></td><td className="num"><b>{compact(spend)}</b></td></tr></tfoot>
+              </table></div>}
             </div>;
           })}
         </div> : <div className="map-groups">
           {groups.map((g) => {
             const groupLines = results.filter((r) => lineGroup(r.line) === g);
             const budget = groupLines.reduce((s, r) => s + r.line.budget, 0), spend = groupLines.reduce((s, r) => s + r.spend, 0);
-            return <div key={g} className="map-group">
-              <div className="map-group-head"><b>{g}</b><span className="viz-sub">{compact(spend)} / {compact(budget)}</span></div>
+            return <div key={g} className={`map-group${dragOver === `g:${g}` ? " over" : ""}`} {...groupDrop(g)}>
+              {groupHead(g, <span className="viz-sub">{compact(spend)} / {compact(budget)}</span>)}
+              {!groupLines.length && <div className="map-group-empty">비어 있어요 — 라인을 ⠿ 손잡이로 끌어 놓거나 '+ 라인'으로 추가하세요</div>}
               <div className="map-lines">{groupLines.map(({ line }) => {
                 const r = byLine.get(line.id)!;
                 const list = [...r.campaigns].sort((a, b) => b.spend - a.spend);
@@ -446,8 +509,10 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
                 const single = list.length === 1 && list[0].name.replace(/\s+/g, "").toLowerCase().includes(line.name.replace(/\s+/g, "").toLowerCase()) ? list[0] : null;
                 return <div key={line.id} className={`map-line${dragOver === line.id ? " over" : ""}${list.length ? "" : " empty"}`} {...dropProps(line.id)}>
                   <div className={`map-band${single ? " draggable" : ""}`} draggable={!!single} onDragStart={single ? (e) => { e.dataTransfer.setData("text/campaign-id", single.id); e.dataTransfer.effectAllowed = "move"; } : undefined} title={single ? "끌어서 다른 라인으로 옮기세요" : line.note || ""}>
+                    <span className="line-handle" {...lineDrag(line)}>⠿</span>
                     <span className={`channel ${line.channel}`}>{line.channel === "all" ? "전체" : CHANNEL_LABEL[line.channel as Channel].replace("네이버 ", "")}</span>
                     <b>{line.name}</b>
+                    <button className="link-button danger line-del" title="라인 삭제" onClick={() => deleteLine(line)}>×</button>
                     {single && line.campaignIds.includes(single.id) ? <span title="직접 지정">📌</span> : null}
                     <span className="map-amount">{compact(r.spend)} / {compact(line.budget)}</span>
                     {single && <MoveMenu c={single} from={line.id} />}
@@ -460,7 +525,7 @@ export function MixMappingView({ advertiserId, mixes, campaigns, onSave, onExclu
           })}
         </div>}
       </div>}
-      {lines.length > 0 && <small className="viz-sub">📌 = 직접 옮긴 캠페인(키워드보다 우선). 미분류로 뺀 캠페인은 그 라인 키워드에서 제외돼요. 다음 달은 '지난달 매핑 복사'로 그대로 이어 쓸 수 있어요.</small>}
+      {lines.length > 0 && <small className="viz-sub">⠿ 손잡이로 라인을 다른 믹스구분·위치로 옮길 수 있어요. 📌 = 직접 옮긴 캠페인(키워드보다 우선). 미분류로 뺀 캠페인은 그 라인 키워드에서 제외돼요. 다음 달은 '지난달 매핑 복사'로 그대로 이어 쓸 수 있어요.</small>}
     </section>
   );
 }
