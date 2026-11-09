@@ -1160,9 +1160,26 @@ async function gfaSetActive(account: string, entityType: EntityType, id: string,
   const resource = GFA_RESOURCE[entityType];
   const no = Number(id);
   const key = { campaigns: "campaignNos", adSets: "adSetNos", creatives: "creativeNos" }[resource];
-  return gfaTry("ON/OFF 변경", `adAccounts/${account}/${resource}/activate`, [
-    { nos: [no], activated: on }, { [key]: [no], activated: on }, [{ no, activated: on }], { no, activated: on }, { nos: [no], activate: on },
-  ]);
+  // GFA는 대상 번호를 본문이 아니라 쿼리 파라미터(campaignNos/adSetNos/creativeNos, Set)로 받는다
+  // ("Required request parameter 'campaignNos' for method parameter type Set is not present").
+  // ON/OFF 값의 자리도 문서에 없어 쿼리 → 본문 → 경로(activate/deactivate) 순으로 시도한다.
+  const base = `adAccounts/${account}/${resource}`;
+  const attempts: Array<{ path: string; body?: unknown }> = [
+    { path: `${base}/activate?${key}=${no}&activated=${on}` },
+    { path: `${base}/activate?${key}=${no}`, body: { activated: on } },
+    { path: `${base}/${on ? "activate" : "deactivate"}?${key}=${no}` },
+    { path: `${base}/activate?${key}=${no}&activate=${on}` },
+  ];
+  const errors: string[] = [];
+  for (const a of attempts) {
+    try { return await gfaRequest("POST", a.path, a.body ?? {}); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(message);
+      if (/HTTP 401/.test(message)) break; // 인증 오류면 형식 문제가 아니라 더 시도해도 같다
+    }
+  }
+  throw new Error(`GFA ON/OFF 변경 실패 — ${[...new Set(errors)].join(" / ").slice(0, 900)}`);
 }
 
 async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
