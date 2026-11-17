@@ -43,6 +43,21 @@ export async function POST(request: Request) {
         return Response.json({ log, after: after.map((t) => ({ targetTp: t.targetTp, target: t.target })) });
       }
 
+      // 쇼핑검색 소재 복사 재시도: referenceKey(상품) 포함해서 기존 그룹에 추가
+      if (body.action === "copy_shopping_ads") {
+        const { srcAdgroupId, dstAdgroupId } = body;
+        if (!srcAdgroupId || !dstAdgroupId) return Response.json({ error: "srcAdgroupId, dstAdgroupId가 필요합니다." }, { status: 400 });
+        const srcAds = ((await naverRequest("GET", `/ncc/ads?nccAdgroupId=${srcAdgroupId}`, undefined, String(CID))) as any[]).filter((a) => !a.delFlag);
+        let ok = 0; const errors: string[] = [];
+        for (const a of srcAds.slice(0, 100)) {
+          try {
+            await naverRequest("POST", "/ncc/ads", { nccAdgroupId: dstAdgroupId, type: a.type, referenceKey: a.referenceKey, ad: a.ad || {}, adAttr: pick(a.adAttr || {}, ["bidAmt", "useGroupBidAmt"]), userLock: a.userLock }, String(CID));
+            ok++;
+          } catch (error) { errors.push(String((error as Error).message).slice(0, 180)); }
+        }
+        return Response.json({ src: srcAds.length, created: ok, errors: errors.slice(0, 3) });
+      }
+
       const { srcCampaignId, name } = body;
       if (!srcCampaignId || !name) return Response.json({ error: "srcCampaignId와 name이 필요합니다." }, { status: 400 });
 
