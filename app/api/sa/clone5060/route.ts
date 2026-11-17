@@ -16,6 +16,17 @@ export async function POST(request: Request) {
     try {
       const body = (await request.json()) as any;
 
+      // 빈 광고그룹 삭제 (소재·키워드가 없는 그룹만 지워준다 — 안전장치)
+      if (body.action === "delete_adgroup") {
+        const adgroupId = String(body.adgroupId || "");
+        if (!adgroupId.startsWith("grp-")) return Response.json({ error: "adgroupId가 필요합니다." }, { status: 400 });
+        const ads = ((await naverRequest("GET", `/ncc/ads?nccAdgroupId=${adgroupId}`, undefined, String(CID))) as any[]).filter((a) => !a.delFlag);
+        const kws = ((await naverRequest("GET", `/ncc/keywords?nccAdgroupId=${adgroupId}`, undefined, String(CID))) as any[]).filter((k) => !k.delFlag);
+        if (ads.length || kws.length) return Response.json({ error: `빈 그룹이 아닙니다 (소재 ${ads.length}, 키워드 ${kws.length}) — 삭제 중단` }, { status: 400 });
+        await naverRequest("DELETE", `/ncc/adgroups/${adgroupId}`, undefined, String(CID));
+        return Response.json({ ok: true, deleted: adgroupId });
+      }
+
       // 보정: 생성 시 targets가 무시되는 문제 → 기존 타겟 행은 PUT으로 값 교체, 없는 타입(AGE 등)은 광고그룹 PUT으로 추가 시도
       if (body.action === "fix_targets") {
         const { adgroupId, targets } = body as { adgroupId: string; targets: Array<{ targetTp: string; target: any }> };
