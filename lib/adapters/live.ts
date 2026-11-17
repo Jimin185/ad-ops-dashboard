@@ -1205,6 +1205,39 @@ export async function gfaRequest(method: MediaMethod, path: string, body?: unkno
   return parsed;
 }
 
+/**
+ * GFA 소재 이미지 업로드 (multipart). POST /adAccounts/{계정}/creatives/image
+ * Content-Type 은 직접 넣지 않는다 — FormData 가 boundary 를 포함해 자동으로 설정한다.
+ * 응답의 imageNo 를 소재 생성(creatives/SINGLE_IMAGE 등)에 쓴다.
+ */
+export async function gfaUploadImage(adAccountNo: string, file: Blob, fileName: string, creativeTemplateCode: string) {
+  const config = gfaConfig();
+  if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
+  const account = cleanId(adAccountNo);
+  if (!account) throw new Error("광고계정 번호가 필요합니다.");
+  const url = `${GFA_BASE}/adAccounts/${account}/creatives/image`;
+  const call = async (token: string) => {
+    const form = new FormData();
+    form.append("file", file, fileName);
+    form.append("creativeTemplateCode", creativeTemplateCode);
+    return fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, AccessManagerAccountNo: config.manager }, body: form, cache: "no-store" });
+  };
+  let response = await call(await gfaToken());
+  if (response.status === 401) response = await call(await gfaToken(true));
+  for (let retry = 0; retry < 2 && (response.status === 429 || response.status >= 500); retry++) {
+    await new Promise((r) => setTimeout(r, 800 * (retry + 1) + Math.random() * 400));
+    response = await call(await gfaToken());
+  }
+  const text = await response.text();
+  let parsed: any; try { parsed = text ? JSON.parse(text) : {}; } catch { parsed = { message: text }; }
+  if (!response.ok) {
+    const head = [parsed?.message, parsed?.error?.message, parsed?.title].find((v) => typeof v === "string") || "";
+    const raw = JSON.stringify(parsed);
+    throw new Error(`${head}${raw && raw !== "{}" && raw.length > head.length + 20 ? ` ${raw.slice(0, 500)}` : ""} (HTTP ${response.status})`);
+  }
+  return parsed;
+}
+
 async function googleRaw(method: MediaMethod, path: string, body?: unknown) {
   const developerToken = env("GOOGLE_ADS_DEVELOPER_TOKEN"), loginId = env("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
   if (!developerToken || !loginId) throw new Error("Google Ads MCC 인증정보가 없습니다.");

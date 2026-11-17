@@ -29,6 +29,8 @@ Claude(또는 운영자)가 실제 광고 세팅을 바꾸는 도구이므로, *
 - `GET/PUT /api/mixes?advertiserId=` — 월 믹스(lines 포함). PUT은 전체 mix 객체를 보냄 (lines 필드 생략 시 기존 유지, [] 는 삭제)
 - `GET/PUT /api/schedules` — ON/OFF 예약. 크론: OFF는 전날 23:30경, ON은 당일 00:10경 KST (Hobby 플랜이라 해당 '시' 안에서 지연 가능). 수동 실행: `GET /api/cron/schedules`
 - `GET/PUT /api/kpi`, `/api/brandsearch-contracts` — 계정별 전환지표 선택, 정액 계약 수기 입력
+- `POST /api/gfa/ops` body `{method, path:"adAccounts/...", payload}` — GFA 원본 API passthrough (JSON)
+- `POST /api/gfa/upload` multipart `accountId, creativeTemplateCode, file` — GFA 소재 이미지 업로드 → 응답의 imageNo로 `/api/gfa/ops`에서 소재 생성 (4MB 이하)
 - `POST /api/report` body `{accounts:["meta:123",...], since, until}` — 일자별 매체 실적
 
 ## 매체별 제약 (전부 실제로 부딪혀 확인한 것)
