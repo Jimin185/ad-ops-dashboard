@@ -259,7 +259,7 @@ async function googleToken() {
   googleTokenCache = { token: body.access_token, expiresAt: Date.now() + num(body.expires_in) * 1000 };
   return body.access_token;
 }
-async function googleRequest(path: string, body?: unknown) {
+export async function googleRequest(path: string, body?: unknown) {
   const developerToken = env("GOOGLE_ADS_DEVELOPER_TOKEN");
   const loginId = env("GOOGLE_ADS_LOGIN_CUSTOMER_ID");
   if (!developerToken || !loginId) throw new Error("Google Ads MCC 인증정보가 없습니다.");
@@ -269,7 +269,7 @@ async function googleRequest(path: string, body?: unknown) {
     body: body ? JSON.stringify(body) : undefined,
   });
 }
-async function googleSearch(customer: string, query: string) {
+export async function googleSearch(customer: string, query: string) {
   const body = await googleRequest(`customers/${cleanId(customer)}/googleAds:search`, { query });
   return body.results || [];
 }
@@ -294,7 +294,7 @@ async function googleFillEuDeclarations(account: string) {
   return missing.length;
 }
 /** EU 선언 미비로 거절된 mutate를, 계정 선언을 캠페인에 전파한 뒤 한 번 더 시도한다 */
-async function googleMutateWithEuRetry<T>(account: string, run: () => Promise<T>): Promise<T> {
+export async function googleMutateWithEuRetry<T>(account: string, run: () => Promise<T>): Promise<T> {
   try { return await run(); } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!/EU political advertising/i.test(message)) throw error;
