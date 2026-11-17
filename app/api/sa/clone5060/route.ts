@@ -30,7 +30,9 @@ export async function POST(request: Request) {
             } else {
               const group = (await naverRequest("GET", `/ncc/adgroups/${adgroupId}`, undefined, String(CID))) as any;
               const keep = (group.targets || []).filter((t: any) => !t.delFlag).map((t: any) => ({ nccTargetId: t.nccTargetId, ownerId: adgroupId, targetTp: t.targetTp, target: t.target }));
-              await naverRequest("PUT", `/ncc/adgroups/${adgroupId}`, { ...group, targets: [...keep, { ownerId: adgroupId, targetTp: want.targetTp, target: want.target }] }, String(CID));
+              const payload = { ...group, targets: [...keep, { ownerId: adgroupId, targetTp: want.targetTp, target: want.target }] };
+              await naverRequest("PUT", `/ncc/adgroups/${adgroupId}?fields=targets`, payload, String(CID))
+                .catch(() => naverRequest("PUT", `/ncc/adgroups/${adgroupId}`, payload, String(CID)));
               log.push({ step: "target-add-via-group", targetTp: want.targetTp, ok: true });
             }
           } catch (error) {
