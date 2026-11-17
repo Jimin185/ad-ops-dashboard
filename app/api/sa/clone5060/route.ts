@@ -90,6 +90,20 @@ export async function POST(request: Request) {
         log.push({ step: "group", src: g.name, ok: true, id: newGroupId });
         if (!newGroupId) continue;
 
+        // 생성 시 targets가 무시되므로, 기본 생성된 타겟 행을 원본 값으로 교체한다 (AGE는 API 불가 → UI 작업)
+        try {
+          const srcDetail = (await naverRequest("GET", `/ncc/adgroups/${g.nccAdgroupId}`, undefined, String(CID))) as any;
+          const newRows = (await naverRequest("GET", `/ncc/targets?ownerId=${newGroupId}`, undefined, String(CID))) as any[];
+          for (const st of (srcDetail.targets || []).filter((t: any) => !t.delFlag)) {
+            const row = newRows.find((t) => t.targetTp === st.targetTp && !t.delFlag);
+            if (!row) { log.push({ step: "target-missing", group: g.name, targetTp: st.targetTp }); continue; }
+            await naverRequest("PUT", `/ncc/targets/${row.nccTargetId}`, { nccTargetId: row.nccTargetId, ownerId: newGroupId, targetTp: st.targetTp, target: st.target }, String(CID));
+          }
+          log.push({ step: "targets-synced", group: g.name });
+        } catch (error) {
+          log.push({ step: "targets-synced", group: g.name, ok: false, error: String((error as Error).message).slice(0, 200) });
+        }
+
         // 3) 키워드 복사 (100개씩)
         try {
           const kws = ((await naverRequest("GET", `/ncc/keywords?nccAdgroupId=${g.nccAdgroupId}`, undefined, String(CID))) as any[]).filter((k) => !k.delFlag);
