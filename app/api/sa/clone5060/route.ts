@@ -15,6 +15,32 @@ export async function POST(request: Request) {
     const log: any[] = [];
     try {
       const body = (await request.json()) as any;
+
+      // 보정: 생성 시 targets가 무시되는 문제 → 기존 타겟 행은 PUT으로 값 교체, 없는 타입(AGE 등)은 광고그룹 PUT으로 추가 시도
+      if (body.action === "fix_targets") {
+        const { adgroupId, targets } = body as { adgroupId: string; targets: Array<{ targetTp: string; target: any }> };
+        if (!adgroupId || !Array.isArray(targets)) return Response.json({ error: "adgroupId와 targets가 필요합니다." }, { status: 400 });
+        const existing = (await naverRequest("GET", `/ncc/targets?ownerId=${adgroupId}`, undefined, String(CID))) as any[];
+        for (const want of targets) {
+          const row = existing.find((t) => t.targetTp === want.targetTp && !t.delFlag);
+          try {
+            if (row) {
+              await naverRequest("PUT", `/ncc/targets/${row.nccTargetId}`, { nccTargetId: row.nccTargetId, ownerId: adgroupId, targetTp: want.targetTp, target: want.target }, String(CID));
+              log.push({ step: "target-put", targetTp: want.targetTp, ok: true });
+            } else {
+              const group = (await naverRequest("GET", `/ncc/adgroups/${adgroupId}`, undefined, String(CID))) as any;
+              const keep = (group.targets || []).filter((t: any) => !t.delFlag).map((t: any) => ({ nccTargetId: t.nccTargetId, ownerId: adgroupId, targetTp: t.targetTp, target: t.target }));
+              await naverRequest("PUT", `/ncc/adgroups/${adgroupId}`, { ...group, targets: [...keep, { ownerId: adgroupId, targetTp: want.targetTp, target: want.target }] }, String(CID));
+              log.push({ step: "target-add-via-group", targetTp: want.targetTp, ok: true });
+            }
+          } catch (error) {
+            log.push({ step: "target", targetTp: want.targetTp, ok: false, error: String((error as Error).message).slice(0, 300) });
+          }
+        }
+        const after = (await naverRequest("GET", `/ncc/targets?ownerId=${adgroupId}`, undefined, String(CID))) as any[];
+        return Response.json({ log, after: after.map((t) => ({ targetTp: t.targetTp, target: t.target })) });
+      }
+
       const { srcCampaignId, name } = body;
       if (!srcCampaignId || !name) return Response.json({ error: "srcCampaignId와 name이 필요합니다." }, { status: 400 });
 
