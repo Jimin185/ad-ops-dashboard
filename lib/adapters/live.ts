@@ -1182,7 +1182,7 @@ async function gfaSetActive(account: string, entityType: EntityType, id: string,
   throw new Error(`GFA ON/OFF 변경 실패 — ${[...new Set(errors)].join(" / ").slice(0, 900)}`);
 }
 
-async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
+export async function gfaRequest(method: MediaMethod, path: string, body?: unknown) {
   const config = gfaConfig();
   if (!config) throw new Error("네이버 GFA 인증정보가 없습니다.");
   const url = `${GFA_BASE}/${path.replace(/^\/+/, "")}`;
