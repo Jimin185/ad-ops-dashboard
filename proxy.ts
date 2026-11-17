@@ -10,7 +10,7 @@ async function sha256(value: string) {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const password = process.env.DASHBOARD_PASSWORD;
   if (!password) return NextResponse.next(); // 변수 미설정이면 기존처럼 공개 (잠금 해제 상태)
   const { pathname } = request.nextUrl;
