@@ -69,11 +69,11 @@ async function gfaRows(since: string, until: string): Promise<Row[]> {
 
 async function googleRows(since: string, until: string): Promise<Row[]> {
   const rows = await googleSearch(GOOGLE_CUSTOMER,
-    `SELECT campaign.name, segments.date, metrics.impressions, metrics.clicks, metrics.video_views, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE campaign.id = ${GOOGLE_CAMPAIGN} AND segments.date BETWEEN '${since}' AND '${until}'`);
+    `SELECT campaign.name, segments.date, metrics.impressions, metrics.clicks, metrics.video_trueview_views, metrics.cost_micros, metrics.conversions, metrics.conversions_value FROM campaign WHERE campaign.id = ${GOOGLE_CAMPAIGN} AND segments.date BETWEEN '${since}' AND '${until}'`);
   return (rows as any[]).map((row) => ({
     date: String(row.segments?.date || "").slice(0, 10), channel: "유튜브",
     name: row.campaign?.name || "[VVC/5060] 인플루언서_인스트림",
-    impressions: num(row.metrics?.impressions), clicks: num(row.metrics?.clicks), views: num(row.metrics?.videoViews),
+    impressions: num(row.metrics?.impressions), clicks: num(row.metrics?.clicks), views: num(row.metrics?.videoTrueviewViews),
     spend: Math.round(num(row.metrics?.costMicros) / 1e6), conversions: num(row.metrics?.conversions), revenue: num(row.metrics?.conversionsValue),
   }));
 }
