@@ -335,11 +335,15 @@ export async function GET(request: Request) {
       return Response.json({ status: "ready", since, until, ...va });
     }
     if (dataset === "vameta") {
-      const ads: any[] = await googleSearch(GOOGLE_CUSTOMER, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.video_ad.video.asset FROM ad_group_ad WHERE campaign.id = ${GOOGLE_CAMPAIGN}`);
+      const ads: any[] = await googleSearch(GOOGLE_CUSTOMER, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.type, ad_group_ad.ad.video_ad.video.asset, ad_group_ad.ad.video_responsive_ad.videos FROM ad_group_ad WHERE campaign.id = ${GOOGLE_CAMPAIGN}`);
       const assets: any[] = await googleSearch(GOOGLE_CUSTOMER, `SELECT asset.resource_name, asset.youtube_video_asset.youtube_video_id FROM asset WHERE asset.type = 'YOUTUBE_VIDEO'`).catch(() => []);
       const vid = new Map(assets.map((r: any) => [r.asset?.resourceName, r.asset?.youtubeVideoAsset?.youtubeVideoId]));
       return Response.json({
-        rows: ads.map((r: any) => ({ name: r.adGroupAd?.ad?.name || "", videoId: vid.get(r.adGroupAd?.ad?.videoAd?.video?.asset) || null })),
+        rows: ads.map((r: any) => {
+          const ad = r.adGroupAd?.ad || {};
+          const asset = ad.videoAd?.video?.asset || ad.videoResponsiveAd?.videos?.[0]?.asset;
+          return { name: ad.name || "", videoId: vid.get(asset) || null };
+        }),
         debugAd: ads[0] || null,
         debugAssets: assets.slice(0, 3),
         assetCount: assets.length,
