@@ -1046,7 +1046,7 @@ export type SaRow = { imp: number; clk: number; cost: number; conv: number; reve
 const toRow = (v: SaVals): SaRow => ({ imp: v[0], clk: v[1], cost: v[2], conv: v[3], revenue: v[4], cart: v[5] });
 
 /** 기간의 SA 상세 분석. 시간이 걸리는 날짜가 남으면 status: "loading"으로 진행률만 돌려주고, 다시 부르면 이어서 받는다. */
-export async function getSaInsights(customerId: string, since: string, until: string, force = false) {
+export async function getSaInsights(customerId: string, since: string, until: string, force = false, campaignFilter?: string) {
   const dates = eachDate(since, until);
   const started = Date.now();
   const days: SaDay[] = [];
@@ -1065,6 +1065,10 @@ export async function getSaInsights(customerId: string, since: string, until: st
   }
   const campaigns = (await naverRequest("GET", "/ncc/campaigns", undefined, customerId)) as any[];
   const campaignInfo = Object.fromEntries(campaigns.map((c) => [c.nccCampaignId, { name: c.name, type: c.campaignTp }]));
+  if (campaignFilter) {
+    const keep = (k: string) => (campaignInfo[k.split("|")[0]]?.name || "").includes(campaignFilter);
+    for (const m of [ad, term]) for (const k of Object.keys(m)) if (!keep(k)) delete m[k];
+  }
   const sum = (entries: Array<[string, SaVals]>, keyOf: (parts: string[]) => string) => {
     const out: Record<string, SaVals> = {};
     for (const [k, v] of entries) { const g = keyOf(k.split("|")); v.forEach((x, i) => addVals(out, g, i, x)); }
