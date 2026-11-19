@@ -340,6 +340,9 @@ export async function GET(request: Request) {
       const vid = new Map(assets.map((r: any) => [r.asset?.resourceName, r.asset?.youtubeVideoAsset?.youtubeVideoId]));
       return Response.json({
         rows: ads.map((r: any) => ({ name: r.adGroupAd?.ad?.name || "", videoId: vid.get(r.adGroupAd?.ad?.videoAd?.video?.asset) || null })),
+        debugAd: ads[0] || null,
+        debugAssets: assets.slice(0, 3),
+        assetCount: assets.length,
       });
     }
     const errors: string[] = [];
