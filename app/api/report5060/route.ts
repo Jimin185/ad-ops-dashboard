@@ -1,4 +1,4 @@
-import { getSaInsights, gfaRequest, googleSearch, naverRequest } from "@/lib/adapters/live";
+import { getSaInsights, gfaRequest, googleSearch, naverRequest, tiktokRequest } from "@/lib/adapters/live";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +29,7 @@ const GFA_ADSETS: Record<string, string> = {
   "4768764": "08_높낮이_1250x560", "4768765": "08_높낮이_1200x1200", "4768766": "08_높낮이_1200x628",
   "4768767": "09_책상교체_1250x560", "4768768": "09_책상교체_1200x1200", "4768769": "09_책상교체_1200x628",
 };
+const TIKTOK_ADVERTISER = "7571767490892595201";
 const GOOGLE_CUSTOMER = "3275349017";
 const GOOGLE_CAMPAIGN = "24472123581"; // [VVC/5060] 인플루언서_인스트림_1118-1217
 const TARGET_AGES = new Set(["AGE_RANGE_45_54", "AGE_RANGE_55_64"]);
@@ -124,6 +125,23 @@ async function googleRows(since: string, until: string): Promise<Row[]> {
   });
 }
 
+// 틱톡: 광고(영상 소재) 단위 일자별 — 합산하면 캠페인 전체가 된다.
+async function tiktokRows(since: string, until: string): Promise<Row[]> {
+  const data = await tiktokRequest("report/integrated/get/", {
+    advertiser_id: TIKTOK_ADVERTISER, report_type: "BASIC", data_level: "AUCTION_AD",
+    dimensions: JSON.stringify(["ad_id", "stat_time_day"]),
+    metrics: JSON.stringify(["ad_name", "spend", "impressions", "clicks", "video_play_actions"]),
+    start_date: since, end_date: until, page_size: "500",
+  });
+  return ((data?.list || []) as any[]).map((item) => {
+    const m = item.metrics || {};
+    const row = blank(String(item.dimensions?.stat_time_day || "").slice(0, 10), "틱톡", m.ad_name || `광고 ${item.dimensions?.ad_id}`);
+    row.impressions = num(m.impressions); row.clicks = num(m.clicks); row.views = num(m.video_play_actions);
+    row.spend = Math.round(num(m.spend));
+    return row;
+  }).filter((r) => r.impressions || r.spend);
+}
+
 // VA: 유튜브 광고(영상 소재)별 + 연령대별 기간 누적
 async function vaDataset(since: string, until: string) {
   const range = `segments.date BETWEEN '${since}' AND '${until}'`;
@@ -185,9 +203,9 @@ export async function GET(request: Request) {
       return Response.json({ status: "ready", since, until, ...va });
     }
     const errors: string[] = [];
-    const settled = await Promise.allSettled([saRows(since, until, errors), gfaRows(since, until, errors), googleRows(since, until)]);
+    const settled = await Promise.allSettled([saRows(since, until, errors), gfaRows(since, until, errors), googleRows(since, until), tiktokRows(since, until)]);
     const rows = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-    settled.forEach((r, i) => { if (r.status === "rejected") errors.push(`${["sa", "gfa", "google"][i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`); });
+    settled.forEach((r, i) => { if (r.status === "rejected") errors.push(`${["sa", "gfa", "google", "tiktok"][i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`); });
     rows.sort((a, b) => a.date.localeCompare(b.date) || a.channel.localeCompare(b.channel) || a.name.localeCompare(b.name));
     return Response.json({ since, until, basis: "spend=매체 기준(VAT 제외·순매체), 전환=구매/장바구니 분리", rows, errors });
   } catch (error) {

@@ -1710,3 +1710,14 @@ export async function exportGfaRaw(accountId: string, since: string, until: stri
     sales: num(r.sales), imp: num(r.impCount), clk: num(r.clickCount), raw: r,
   })) };
 }
+
+// ---- TikTok Marketing API (5060 리포트용) ----
+export async function tiktokRequest(path: string, params: Record<string, string>) {
+  const token = process.env.TIKTOK_ACCESS_TOKEN;
+  if (!token) throw new Error("TIKTOK_ACCESS_TOKEN이 설정되지 않았습니다.");
+  const url = `https://business-api.tiktok.com/open_api/v1.3/${path}?${new URLSearchParams(params)}`;
+  const res = await fetch(url, { headers: { "Access-Token": token }, cache: "no-store" });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || body?.code !== 0) throw new Error(`TikTok API 오류: ${body?.message || res.status}`);
+  return body.data;
+}
