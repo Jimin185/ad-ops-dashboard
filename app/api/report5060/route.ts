@@ -334,6 +334,14 @@ export async function GET(request: Request) {
       const va = await vaDataset(since, until);
       return Response.json({ status: "ready", since, until, ...va });
     }
+    if (dataset === "vameta") {
+      const ads: any[] = await googleSearch(GOOGLE_CUSTOMER, `SELECT ad_group_ad.ad.id, ad_group_ad.ad.name, ad_group_ad.ad.video_ad.video.asset FROM ad_group_ad WHERE campaign.id = ${GOOGLE_CAMPAIGN}`);
+      const assets: any[] = await googleSearch(GOOGLE_CUSTOMER, `SELECT asset.resource_name, asset.youtube_video_asset.youtube_video_id FROM asset WHERE asset.type = 'YOUTUBE_VIDEO'`).catch(() => []);
+      const vid = new Map(assets.map((r: any) => [r.asset?.resourceName, r.asset?.youtubeVideoAsset?.youtubeVideoId]));
+      return Response.json({
+        rows: ads.map((r: any) => ({ name: r.adGroupAd?.ad?.name || "", videoId: vid.get(r.adGroupAd?.ad?.videoAd?.video?.asset) || null })),
+      });
+    }
     const errors: string[] = [];
     const settled = await Promise.allSettled([saRows(since, until, errors), gfaRows(since, until, errors), googleRows(since, until), tiktokRows(since, until)]);
     const rows = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
