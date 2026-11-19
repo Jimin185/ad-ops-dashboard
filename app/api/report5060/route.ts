@@ -120,12 +120,12 @@ const TARGET_AGES = new Set(["AGE_RANGE_45_54", "AGE_RANGE_55_64"]);
 type Row = {
   date: string; channel: string; name: string;
   impressions: number; clicks: number; views: number; spend: number;
-  purchases: number; purchaseValue: number; carts: number;
+  purchases: number; purchaseValue: number; carts: number; cartValue: number;
 };
 const num = (v: unknown) => Number(v) || 0;
 const kstToday = () => new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
 const blank = (date: string, channel: string, name: string): Row =>
-  ({ date, channel, name, impressions: 0, clicks: 0, views: 0, spend: 0, purchases: 0, purchaseValue: 0, carts: 0 });
+  ({ date, channel, name, impressions: 0, clicks: 0, views: 0, spend: 0, purchases: 0, purchaseValue: 0, carts: 0, cartValue: 0 });
 
 function eachDate(since: string, until: string) {
   const out: string[] = [];
@@ -152,15 +152,15 @@ async function saRows(since: string, until: string, errors: string[]): Promise<R
     try {
       const ins = await getSaInsights(SA_CUSTOMER, date, date, false, "5060");
       if (ins.status !== "ready") { errors.push(`sa_detail ${date}: 리포트 생성 중(다시 실행하면 채워집니다)`); continue; }
-      const per = new Map<string, { conv: number; revenue: number; cart: number }>();
+      const per = new Map<string, { conv: number; revenue: number; cart: number; cartValue: number }>();
       for (const g of ins.adgroups) {
-        const p = per.get(g.campaign) || { conv: 0, revenue: 0, cart: 0 };
-        p.conv += g.conv; p.revenue += g.revenue; p.cart += g.cart;
+        const p = per.get(g.campaign) || { conv: 0, revenue: 0, cart: 0, cartValue: 0 };
+        p.conv += g.conv; p.revenue += g.revenue; p.cart += g.cart; p.cartValue += (g as any).cartValue || 0;
         per.set(g.campaign, p);
       }
       for (const [campaign, p] of per) {
         const row = byKey.get(`${date}|${campaign}`) || blank(date, "네이버 SA", campaign);
-        row.purchases = p.conv; row.purchaseValue = p.revenue; row.carts = p.cart;
+        row.purchases = p.conv; row.purchaseValue = p.revenue; row.carts = p.cart; row.cartValue = p.cartValue;
         byKey.set(`${date}|${campaign}`, row);
       }
     } catch (e) { errors.push(`sa_detail ${date}: ${e instanceof Error ? e.message : e}`); }
@@ -188,7 +188,7 @@ async function gfaRows(since: string, until: string, errors: string[]): Promise<
       const name = GFA_ADSETS[String(r.adSetNo)] || `그룹 ${r.adSetNo}`;
       const date = String(r.targetDate || "").slice(0, 10);
       const row = byKey.get(`${date}|${name}`) || blank(date, "네이버 GFA", name);
-      if (String(r.convType).toUpperCase().includes("CART")) row.carts += num(r.convCount);
+      if (String(r.convType).toUpperCase().includes("CART")) { row.carts += num(r.convCount); row.cartValue += num(r.convSales); }
       else { row.purchases += num(r.convCount); row.purchaseValue += num(r.convSales); }
       byKey.set(`${date}|${name}`, row);
     }
@@ -248,7 +248,7 @@ async function daDataset(since: string, until: string) {
     const k = keyOf(r.creativeNo, r.adSetNo);
     if (!agg.has(k)) {
       const { message, size, group } = meta(r.adSetNo);
-      agg.set(k, { age: "전체", creativeNo: String(r.creativeNo), name: "", layout: "", message, size, group, impressions: 0, clicks: 0, spend: 0, purchases: 0, carts: 0 });
+      agg.set(k, { age: "전체", creativeNo: String(r.creativeNo), name: "", layout: "", message, size, group, impressions: 0, clicks: 0, spend: 0, purchases: 0, purchaseValue: 0, carts: 0, cartValue: 0 });
     }
     return agg.get(k);
   };
@@ -258,7 +258,7 @@ async function daDataset(since: string, until: string) {
   }
   for (const r of (conv?.rows || []) as any[]) {
     const row = rowFor(r);
-    if (String(r.convType).toUpperCase().includes("CART")) row.carts += num(r.convCount); else row.purchases += num(r.convCount);
+    if (String(r.convType).toUpperCase().includes("CART")) { row.carts += num(r.convCount); row.cartValue += num(r.convSales); } else { row.purchases += num(r.convCount); row.purchaseValue += num(r.convSales); }
   }
   for (const row of agg.values()) {
     const info = GFA_CREATIVES[row.creativeNo];
@@ -320,10 +320,10 @@ export async function GET(request: Request) {
       const pick = (rows: any[], map: (r: any) => any[]) => rows.map(map);
       return Response.json({
         status: "ready", since, until,
-        keywords: pick(ins.keywords, (r) => [r.campaign, r.adgroup, r.keyword, r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart]),
-        searchTerms: pick(ins.searchTerms, (r) => [r.campaign, r.adgroup, r.term, r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart]),
-        powerlinkAds: pick(ins.powerlinkAds, (r) => [r.campaign, r.adgroup, r.headline || "", r.description || "", r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart]),
-        products: pick(ins.products, (r) => [r.name, r.image || "", r.category || "", r.price || 0, r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart]),
+        keywords: pick(ins.keywords, (r) => [r.campaign, r.adgroup, r.keyword, r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart, r.cartValue || 0]),
+        searchTerms: pick(ins.searchTerms, (r) => [r.campaign, r.adgroup, r.term, r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart, r.cartValue || 0]),
+        powerlinkAds: pick(ins.powerlinkAds, (r) => [r.campaign, r.adgroup, r.headline || "", r.description || "", r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart, r.cartValue || 0]),
+        products: pick(ins.products, (r) => [r.name, r.image || "", r.category || "", r.price || 0, r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart, r.cartValue || 0]),
       });
     }
     if (dataset === "da") {

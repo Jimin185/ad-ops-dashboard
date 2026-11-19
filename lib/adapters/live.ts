@@ -997,12 +997,12 @@ export async function naverStatReport(customerId: string, reportTp: string, stat
 // ---- 네이버 SA 상세 분석 (키워드·소재·쇼핑 검색어·제품) ----
 // 하루치 리포트 4종을 받아 (캠페인|그룹|키워드/검색어|소재) 단위로 합쳐서 날짜별로 캐시한다.
 // 값 배열: [노출, 클릭, 비용, 구매수, 구매매출, 장바구니수]
-type SaVals = [number, number, number, number, number, number];
+type SaVals = [number, number, number, number, number, number, number];
 type SaDay = { ad: Record<string, SaVals>; term: Record<string, SaVals> };
-const addVals = (map: Record<string, SaVals>, key: string, i: number, v: number) => { (map[key] ||= [0, 0, 0, 0, 0, 0])[i] += v; };
+const addVals = (map: Record<string, SaVals>, key: string, i: number, v: number) => { (map[key] ||= [0, 0, 0, 0, 0, 0, 0])[i] += v; };
 
 async function saDay(customerId: string, date: string, force: boolean): Promise<SaDay | "pending"> {
-  const key = `sa-day:${customerId}:${date}`;
+  const key = `sa-day2:${customerId}:${date}`;
   const cached = await cacheGet<SaDay & { at: string }>(key);
   if (cached) {
     const finalOk = isFinalDate(date) && new Date(cached.value.at).getTime() >= new Date(`${date}T00:00:00Z`).getTime() + 3 * 86400_000;
@@ -1012,9 +1012,9 @@ async function saDay(customerId: string, date: string, force: boolean): Promise<
   if ([ad, adConv, term, termConv].some((r) => r === "pending")) return "pending";
   const day: SaDay = { ad: {}, term: {} };
   for (const r of ad as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; addVals(day.ad, k, 0, num(r[9])); addVals(day.ad, k, 1, num(r[10])); addVals(day.ad, k, 2, num(r[11])); }
-  for (const r of adConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[10] === "purchase") { addVals(day.ad, k, 3, num(r[11])); addVals(day.ad, k, 4, num(r[12])); } else if (r[10] === "add_to_cart") addVals(day.ad, k, 5, num(r[11])); }
+  for (const r of adConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[10] === "purchase") { addVals(day.ad, k, 3, num(r[11])); addVals(day.ad, k, 4, num(r[12])); } else if (r[10] === "add_to_cart") { addVals(day.ad, k, 5, num(r[11])); addVals(day.ad, k, 6, num(r[12])); } }
   for (const r of term as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; addVals(day.term, k, 0, num(r[11])); addVals(day.term, k, 1, num(r[12])); addVals(day.term, k, 2, num(r[13])); }
-  for (const r of termConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[12] === "purchase") { addVals(day.term, k, 3, num(r[13])); addVals(day.term, k, 4, num(r[14])); } else if (r[12] === "add_to_cart") addVals(day.term, k, 5, num(r[13])); }
+  for (const r of termConv as string[][]) { const k = `${r[2]}|${r[3]}|${r[4] || "-"}|${r[5] || "-"}`; if (r[12] === "purchase") { addVals(day.term, k, 3, num(r[13])); addVals(day.term, k, 4, num(r[14])); } else if (r[12] === "add_to_cart") { addVals(day.term, k, 5, num(r[13])); addVals(day.term, k, 6, num(r[14])); } }
   await cacheSet(key, { ...day, at: new Date().toISOString() }, isFinalDate(date) ? null : nextDailyRefresh() + 7 * 86400_000);
   return day;
 }
@@ -1042,8 +1042,8 @@ async function saNames(customerId: string, path: "adgroups" | "keywords" | "ads"
   return known;
 }
 
-export type SaRow = { imp: number; clk: number; cost: number; conv: number; revenue: number; cart: number };
-const toRow = (v: SaVals): SaRow => ({ imp: v[0], clk: v[1], cost: v[2], conv: v[3], revenue: v[4], cart: v[5] });
+export type SaRow = { imp: number; clk: number; cost: number; conv: number; revenue: number; cart: number; cartValue: number };
+const toRow = (v: SaVals): SaRow => ({ imp: v[0], clk: v[1], cost: v[2], conv: v[3], revenue: v[4], cart: v[5], cartValue: v[6] || 0 });
 
 /** 기간의 SA 상세 분석. 시간이 걸리는 날짜가 남으면 status: "loading"으로 진행률만 돌려주고, 다시 부르면 이어서 받는다. */
 export async function getSaInsights(customerId: string, since: string, until: string, force = false, campaignFilter?: string) {
@@ -1093,8 +1093,8 @@ export async function getSaInsights(customerId: string, since: string, until: st
   // 제품 = 쇼핑검색 캠페인의 소재(상품). 같은 상품이 여러 그룹에 있으면 합친다.
   const products: Record<string, any> = {};
   for (const r of adRows.filter((r) => r.type === "SHOPPING" && r.info?.product)) {
-    const p = (products[r.info.product] ||= { name: r.info.product, image: r.info.image, price: r.info.price, category: r.info.category, groups: new Set<string>(), imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0, cart: 0 });
-    p.groups.add(r.adgroup); for (const f of ["imp", "clk", "cost", "conv", "revenue", "cart"] as const) p[f] += r[f];
+    const p = (products[r.info.product] ||= { name: r.info.product, image: r.info.image, price: r.info.price, category: r.info.category, groups: new Set<string>(), imp: 0, clk: 0, cost: 0, conv: 0, revenue: 0, cart: 0, cartValue: 0 });
+    p.groups.add(r.adgroup); for (const f of ["imp", "clk", "cost", "conv", "revenue", "cart", "cartValue"] as const) p[f] += r[f];
   }
   const typeTotals: Record<string, SaVals> = {};
   for (const [k, v] of adEntries) { const t = campaignInfo[k.split("|")[0]]?.type || "기타"; v.forEach((x, i) => addVals(typeTotals, t, i, x)); }
