@@ -30,6 +30,89 @@ const GFA_ADSETS: Record<string, string> = {
   "4768767": "09_책상교체_1250x560", "4768768": "09_책상교체_1200x1200", "4768769": "09_책상교체_1200x628",
 };
 const TIKTOK_ADVERTISER = "7571767490892595201";
+const GFA_CREATIVES: Record<string, [string, string]> = {
+  "40424419": ["A", "레이아웃A_9_책상교체_1200x628"],
+  "40424421": ["B", "레이아웃B_5_나만의공간_1200x628"],
+  "40424429": ["C", "레이아웃C_1_새로운시작_1200x628"],
+  "40424431": ["C", "레이아웃C_2_자녀연결_1200x628"],
+  "40424433": ["C", "레이아웃C_4_업무취미_1200x628"],
+  "40424435": ["C", "레이아웃C_5_나만의공간_1200x628"],
+  "40424439": ["C", "레이아웃C_8_높낮이_1200x628"],
+  "40424445": ["C", "레이아웃C_1_새로운시작_1200x1200"],
+  "40424451": ["C", "레이아웃C_9_책상교체_1200x628"],
+  "40424453": ["B", "레이아웃B_9_책상교체_1200x628"],
+  "40424455": ["C", "레이아웃C_9_책상교체_1200x1200"],
+  "40424457": ["B", "레이아웃B_9_책상교체_1250x560"],
+  "40424459": ["B", "레이아웃B_8_높낮이_1200x628"],
+  "40424461": ["A", "레이아웃A_8_높낮이_1200x628"],
+  "40424463": ["C", "레이아웃C_8_높낮이_1200x1200"],
+  "40424465": ["B", "레이아웃B_8_높낮이_1250x560"],
+  "40424467": ["A", "레이아웃A_8_높낮이_1250x560"],
+  "40424469": ["C", "레이아웃C_7_기기전선_1200x628"],
+  "40424471": ["B", "레이아웃B_7_기기전선_1200x628"],
+  "40424473": ["A", "레이아웃A_7_기기전선_1200x628"],
+  "40424475": ["C", "레이아웃C_7_기기전선_1200x1200"],
+  "40424477": ["B", "레이아웃B_7_기기전선_1250x560"],
+  "40424479": ["A", "레이아웃A_7_기기전선_1250x560"],
+  "40424481": ["C", "레이아웃C_6_허리목_1200x628"],
+  "40424483": ["B", "레이아웃B_6_허리목_1200x628"],
+  "40424485": ["A", "레이아웃A_6_허리목_1200x628"],
+  "40424487": ["C", "레이아웃C_6_허리목_1200x1200"],
+  "40424499": ["A", "레이아웃A_5_나만의공간_1200x628"],
+  "40424501": ["C", "레이아웃C_5_나만의공간_1200x1200"],
+  "40424503": ["B", "레이아웃B_5_나만의공간_1250x560"],
+  "40424505": ["A", "레이아웃A_5_나만의공간_1250x560"],
+  "40424509": ["B", "레이아웃B_4_업무취미_1200x628"],
+  "40424511": ["A", "레이아웃A_4_업무취미_1200x628"],
+  "40424513": ["C", "레이아웃C_4_업무취미_1200x1200"],
+  "40424515": ["B", "레이아웃B_4_업무취미_1250x560"],
+  "40424519": ["A", "레이아웃A_4_업무취미_1250x560"],
+  "40424523": ["C", "레이아웃C_3_젊은감각_1200x628"],
+  "40424525": ["B", "레이아웃B_3_젊은감각_1200x628"],
+  "40424527": ["A", "레이아웃A_3_젊은감각_1200x628"],
+  "40424539": ["C", "레이아웃C_3_젊은감각_1200x1200"],
+  "40424543": ["B", "레이아웃B_3_젊은감각_1250x560"],
+  "40424545": ["A", "레이아웃A_3_젊은감각_1250x560"],
+  "40424547": ["B", "레이아웃B_2_자녀연결_1200x628"],
+  "40424549": ["A", "레이아웃A_2_자녀연결_1200x628"],
+  "40424553": ["C", "레이아웃C_2_자녀연결_1200x1200"],
+  "40424555": ["B", "레이아웃B_2_자녀연결_1250x560"],
+  "40424557": ["A", "레이아웃A_2_자녀연결_1250x560"],
+  "40424559": ["B", "레이아웃B_1_새로운시작_1200x628"],
+  "40424561": ["A", "레이아웃A_1_새로운시작_1200x628"],
+  "40424563": ["B", "레이아웃B_1_새로운시작_1250x560"],
+  "40424565": ["A", "레이아웃A_1_새로운시작_1250x560"],
+  "40424609": ["B", "레이아웃B_6_허리목_1250x560"],
+  "40424611": ["A", "레이아웃A_9_책상교체_1250x560"],
+  "40424613": ["A", "레이아웃A_6_허리목_1250x560"],
+  "40424671": ["C", "레이아웃C_1_새로운시작_1250x560"],
+  "40424673": ["C", "레이아웃C_2_자녀연결_1250x560"],
+  "40424677": ["C", "레이아웃C_3_젊은감각_1250x560"],
+  "40424679": ["C", "레이아웃C_4_업무취미_1250x560"],
+  "40424681": ["C", "레이아웃C_5_나만의공간_1250x560"],
+  "40424683": ["C", "레이아웃C_6_허리목_1250x560"],
+  "40424691": ["C", "레이아웃C_7_기기전선_1250x560"],
+  "40424693": ["C", "레이아웃C_8_높낮이_1250x560"],
+  "40424695": ["C", "레이아웃C_9_책상교체_1250x560"],
+  "40424709": ["A", "레이아웃A_6_허리목_1200x1200"],
+  "40424711": ["A", "레이아웃A_9_책상교체_1200x1200"],
+  "40424761": ["A", "레이아웃A_1_새로운시작_1200x1200"],
+  "40424763": ["A", "레이아웃A_2_자녀연결_1200x1200"],
+  "40424765": ["A", "레이아웃A_3_젊은감각_1200x1200"],
+  "40424767": ["A", "레이아웃A_4_업무취미_1200x1200"],
+  "40424769": ["A", "레이아웃A_5_나만의공간_1200x1200"],
+  "40424771": ["A", "레이아웃A_7_기기전선_1200x1200"],
+  "40424773": ["A", "레이아웃A_8_높낮이_1200x1200"],
+  "40424775": ["B", "레이아웃B_1_새로운시작_1200x1200"],
+  "40424777": ["B", "레이아웃B_2_자녀연결_1200x1200"],
+  "40424779": ["B", "레이아웃B_3_젊은감각_1200x1200"],
+  "40424781": ["B", "레이아웃B_4_업무취미_1200x1200"],
+  "40424783": ["B", "레이아웃B_5_나만의공간_1200x1200"],
+  "40424785": ["B", "레이아웃B_6_허리목_1200x1200"],
+  "40424787": ["B", "레이아웃B_7_기기전선_1200x1200"],
+  "40424789": ["B", "레이아웃B_8_높낮이_1200x1200"],
+  "40424791": ["B", "레이아웃B_9_책상교체_1200x1200"],
+};
 const GOOGLE_CUSTOMER = "3275349017";
 const GOOGLE_CAMPAIGN = "24472123581"; // [VVC/5060] 인플루언서_인스트림_1118-1217
 const TARGET_AGES = new Set(["AGE_RANGE_45_54", "AGE_RANGE_55_64"]);
@@ -142,6 +225,48 @@ async function tiktokRows(since: string, until: string): Promise<Row[]> {
   }).filter((r) => r.impressions || r.spend);
 }
 
+// DA: GFA 소재(크리에이티브) 단위 기간 누적 — 레이아웃/메시지/사이즈 비교용
+async function daDataset(since: string, until: string) {
+  const today = kstToday();
+  const end = until >= today ? new Date(Date.parse(today) - 86_400_000).toISOString().slice(0, 10) : until;
+  if (end < since) return { rows: [] };
+  const [perf, conv] = await Promise.all([
+    gfaRequest("GET", `adAccounts/${GFA_ACCOUNT}/performance/past/campaigns/${GFA_CAMPAIGN}/creatives?startDate=${since}&endDate=${end}&timeUnit=daily`),
+    gfaRequest("GET", `adAccounts/${GFA_ACCOUNT}/performance/conversion/past/campaigns/${GFA_CAMPAIGN}/creatives?startDate=${since}&endDate=${end}&timeUnit=daily`).catch(() => null),
+  ]);
+  // 소재명 예: "레이아웃B_9_책상교체_1200x628" → 레이아웃 B, 메시지 09, 사이즈 1200x628
+  const names = new Map<string, string>();
+  for (const [no, group] of Object.entries(GFA_ADSETS)) names.set(no, group);
+  const agg = new Map<string, any>();
+  const keyOf = (creativeNo: unknown, adSetNo: unknown) => `${creativeNo}`;
+  const meta = (adSetNo: unknown) => {
+    const group = names.get(String(adSetNo)) || "";
+    const m = group.match(/^(\d{2})_[^_]+_(.+)$/);
+    return { message: m ? m[1] : "", size: m ? m[2] : "", group };
+  };
+  const rowFor = (r: any) => {
+    const k = keyOf(r.creativeNo, r.adSetNo);
+    if (!agg.has(k)) {
+      const { message, size, group } = meta(r.adSetNo);
+      agg.set(k, { age: "전체", creativeNo: String(r.creativeNo), name: "", layout: "", message, size, group, impressions: 0, clicks: 0, spend: 0, purchases: 0, carts: 0 });
+    }
+    return agg.get(k);
+  };
+  for (const r of (perf?.rows || []) as any[]) {
+    const row = rowFor(r);
+    row.impressions += num(r.impCount); row.clicks += num(r.clickCount); row.spend += Math.round(num(r.sales));
+  }
+  for (const r of (conv?.rows || []) as any[]) {
+    const row = rowFor(r);
+    if (String(r.convType).toUpperCase().includes("CART")) row.carts += num(r.convCount); else row.purchases += num(r.convCount);
+  }
+  for (const row of agg.values()) {
+    const info = GFA_CREATIVES[row.creativeNo];
+    if (info) { row.layout = info[0]; row.name = info[1]; }
+  }
+  return { rows: [...agg.values()].filter((r) => r.impressions || r.spend) };
+}
+
 // VA: 유튜브 광고(영상 소재)별 + 연령대별 기간 누적
 async function vaDataset(since: string, until: string) {
   const range = `segments.date BETWEEN '${since}' AND '${until}'`;
@@ -200,6 +325,10 @@ export async function GET(request: Request) {
         powerlinkAds: pick(ins.powerlinkAds, (r) => [r.campaign, r.adgroup, r.headline || "", r.description || "", r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart]),
         products: pick(ins.products, (r) => [r.name, r.image || "", r.category || "", r.price || 0, r.imp, r.clk, Math.round(r.cost / 1.1), r.conv, r.revenue, r.cart]),
       });
+    }
+    if (dataset === "da") {
+      const da = await daDataset(since, until);
+      return Response.json({ status: "ready", since, until, ...da });
     }
     if (dataset === "va") {
       const va = await vaDataset(since, until);
