@@ -184,7 +184,10 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const dataset = url.searchParams.get("dataset") || "total";
-    const until = url.searchParams.get("until") || kstToday();
+    // 리포트는 전일까지만 집계한다 (당일 부분 데이터 제외).
+    const yesterday = new Date(Date.parse(kstToday()) - 86_400_000).toISOString().slice(0, 10);
+    const reqUntil = url.searchParams.get("until") || yesterday;
+    const until = reqUntil > yesterday ? yesterday : reqUntil;
     const since = url.searchParams.get("since") || "2026-11-18";
     if (dataset === "sa") {
       const ins: any = await saDataset(since, until);
