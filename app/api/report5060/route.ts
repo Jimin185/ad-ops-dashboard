@@ -134,7 +134,8 @@ async function vaDataset(since: string, until: string) {
   const adAgg = new Map<string, any>();
   for (const r of ads as any[]) {
     const name = r.adGroupAd?.ad?.name || `광고 ${r.adGroupAd?.ad?.id}`;
-    const key = (name.match(/\d{2}/) || [""])[0];
+    const key = (name.match(/_(\d{2})_/) || [, ""])[1]; // YT_5060_01_... 에서 소재번호(01~08)만
+
     const a = adAgg.get(name) || { kind: "ad", name, key, impressions: 0, clicks: 0, views: 0, spend: 0, purchases: 0, purchaseValue: 0 };
     a.impressions += num(r.metrics?.impressions); a.clicks += num(r.metrics?.clicks); a.views += num(r.metrics?.videoTrueviewViews);
     a.spend += Math.round(num(r.metrics?.costMicros) / 1e6); a.purchases += num(r.metrics?.conversions); a.purchaseValue += num(r.metrics?.conversionsValue);
