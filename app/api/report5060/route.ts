@@ -344,9 +344,6 @@ export async function GET(request: Request) {
           const asset = ad.videoAd?.video?.asset || ad.videoResponsiveAd?.videos?.[0]?.asset;
           return { name: ad.name || "", videoId: vid.get(asset) || null };
         }),
-        debugAd: ads[0] || null,
-        debugAssets: assets.slice(0, 3),
-        assetCount: assets.length,
       });
     }
     const errors: string[] = [];
