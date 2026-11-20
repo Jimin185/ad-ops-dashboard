@@ -46,6 +46,12 @@ export async function POST(request: Request) {
           await naverRequest("PUT", `/ncc/keywords?fields=userLock`, chunk, String(CID));
         }
         if (lockIds.length) out.locked = lockIds.length;
+        for (const c of (body.campaigns || []) as any[]) {
+          const cm = (await naverRequest("GET", `/ncc/campaigns/${c.id}`, undefined, String(CID))) as any;
+          if (c.dailyBudget != null) { cm.dailyBudget = c.dailyBudget; cm.useDailyBudget = true; }
+          await naverRequest("PUT", `/ncc/campaigns/${c.id}`, cm, String(CID));
+          out[c.id] = { dailyBudget: cm.dailyBudget };
+        }
         for (const u of (body.groups || []) as any[]) {
           const g = (await naverRequest("GET", `/ncc/adgroups/${u.id}`, undefined, String(CID))) as any;
           if (u.bidAmt != null) g.bidAmt = u.bidAmt;
