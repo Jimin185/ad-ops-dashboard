@@ -27,6 +27,29 @@ export async function POST(request: Request) {
         return Response.json({ ok: true, deleted: adgroupId });
       }
 
+      // 미소진 해소: 잠긴 키워드 일괄 ON + 그룹 기본입찰가/그룹예산 조정
+      // body: { action:"sa_tune", unlockAdgroups?: string[], groups?: [{id, bidAmt?, clearBudget?}] }
+      if (body.action === "sa_tune") {
+        const out: Record<string, any> = {};
+        for (const gid of (body.unlockAdgroups || []) as string[]) {
+          const kws = ((await naverRequest("GET", `/ncc/keywords?nccAdgroupId=${gid}`, undefined, String(CID))) as any[]).filter((k) => !k.delFlag && k.userLock);
+          for (let i = 0; i < kws.length; i += 100) {
+            const chunk = kws.slice(i, i + 100).map((k) => ({ nccKeywordId: k.nccKeywordId, userLock: false }));
+            await naverRequest("PUT", `/ncc/keywords?fields=userLock`, chunk, String(CID));
+          }
+          out[gid] = { unlocked: kws.length };
+          log.push({ gid, unlocked: kws.length });
+        }
+        for (const u of (body.groups || []) as any[]) {
+          const g = (await naverRequest("GET", `/ncc/adgroups/${u.id}`, undefined, String(CID))) as any;
+          if (u.bidAmt != null) g.bidAmt = u.bidAmt;
+          if (u.clearBudget) g.useDailyBudget = false;
+          await naverRequest("PUT", `/ncc/adgroups/${u.id}`, g, String(CID));
+          out[u.id] = { ...(out[u.id] || {}), bidAmt: g.bidAmt, useDailyBudget: g.useDailyBudget };
+        }
+        return Response.json({ ok: true, out });
+      }
+
       // 보정: 생성 시 targets가 무시되는 문제 → 기존 타겟 행은 PUT으로 값 교체, 없는 타입(AGE 등)은 광고그룹 PUT으로 추가 시도
       if (body.action === "fix_targets") {
         const { adgroupId, targets } = body as { adgroupId: string; targets: Array<{ targetTp: string; target: any }> };
