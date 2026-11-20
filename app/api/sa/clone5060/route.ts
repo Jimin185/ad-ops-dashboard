@@ -40,6 +40,12 @@ export async function POST(request: Request) {
           out[gid] = { unlocked: kws.length };
           log.push({ gid, unlocked: kws.length });
         }
+        const lockIds = (body.lockKeywordIds || []) as string[];
+        for (let i = 0; i < lockIds.length; i += 100) {
+          const chunk = lockIds.slice(i, i + 100).map((id) => ({ nccKeywordId: id, userLock: true }));
+          await naverRequest("PUT", `/ncc/keywords?fields=userLock`, chunk, String(CID));
+        }
+        if (lockIds.length) out.locked = lockIds.length;
         for (const u of (body.groups || []) as any[]) {
           const g = (await naverRequest("GET", `/ncc/adgroups/${u.id}`, undefined, String(CID))) as any;
           if (u.bidAmt != null) g.bidAmt = u.bidAmt;
